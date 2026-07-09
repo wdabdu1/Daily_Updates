@@ -9,60 +9,37 @@ DB_FILE = "shipment_tracker.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    
-    # 1. Users Table
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-                    username TEXT PRIMARY KEY, 
-                    password TEXT, 
-                    role TEXT)''')
-    
-    # 2. Master Dropdowns Table
-    c.execute('''CREATE TABLE IF NOT EXISTS master_lists (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    list_type TEXT, 
-                    item_value TEXT,
-                    UNIQUE(list_type, item_value))''')
-    
-    # 3. Main Shipments Table
+    c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS master_lists (id INTEGER PRIMARY KEY AUTOINCREMENT, list_type TEXT, item_value TEXT, UNIQUE(list_type, item_value))''')
     c.execute('''CREATE TABLE IF NOT EXISTS shipments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    global_status TEXT, month TEXT, supplier TEXT, brand TEXT, cat TEXT, approval TEXT, model TEXT, type TEXT,
-                    consignee TEXT, offshore_company TEXT, supplier_pi_no TEXT, supplier_pi_date TEXT, supplier_payment_terms TEXT,
-                    received_signed_pi_date TEXT, sent_signed_pi_date TEXT, bu_po_date TEXT, order_execution_date TEXT,
-                    latest_shipment_dt TEXT, incoterm TEXT, origin TEXT, ordered_qty REAL, unit_price REAL, total_value REAL,
-                    currency TEXT, bu_estimated_shipping_cost REAL, actual_shipping_cost_usd REAL, actual_shipping_cost_aed REAL,
-                    amount_saved REAL, forwarder_name TEXT, marine_insurance TEXT, draft_doc_recv_date TEXT, final_draft_documents TEXT,
-                    original_documents_rcvd_date TEXT, dhl_supplier_to_office TEXT, original_docs_sent_to_bank_date TEXT,
-                    dhl_office_to_adib TEXT, dhl_date_adib_to_ucb TEXT, dhl_adib_to_ucb TEXT, qty_shipped REAL, unit_price_shipped REAL,
-                    total_shipped_value REAL, supplier_invoice_no TEXT, supplier_invoice_date TEXT, etd TEXT, eta TEXT,
-                    logistics_status TEXT, b_l_no TEXT, bol_date TEXT, shipping_line TEXT, cntr_20ft TEXT, cntr_40ft TEXT,
-                    techuip_invoice_no TEXT, techuip_invoice_value REAL, techuip_mot_approved_pi_no TEXT, techuip_mot_approved_pi_date TEXT,
-                    mot_pi_quantity REAL, approved_mot_unit_price_usd REAL, approved_mot_total_price_usd REAL, acd_cost_usd REAL,
-                    due_date TEXT, due_amount REAL, advance_payment REAL, payment_date_adv TEXT, remaining_payment REAL, payment_date_rem TEXT,
-                    remarks_finance TEXT, file_name TEXT, separator_no TEXT, orion_pr_no TEXT, orion_po_no TEXT, orion_sa TEXT,
-                    orion_grn TEXT, orion_bill_reg TEXT, orion_invoice_offshore1 TEXT, orion_invoice_offshore2 TEXT, inspection_no TEXT, grn_no TEXT,
-                    author TEXT, approved_by TEXT, remarks_general TEXT, mot TEXT)''')
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, global_status TEXT, month TEXT, supplier TEXT, brand TEXT, cat TEXT, approval TEXT, model TEXT, type TEXT,
+                    consignee TEXT, offshore_company TEXT, supplier_pi_no TEXT, supplier_pi_date TEXT, supplier_payment_terms TEXT, received_signed_pi_date TEXT, sent_signed_pi_date TEXT, 
+                    bu_po_date TEXT, order_execution_date TEXT, latest_shipment_dt TEXT, incoterm TEXT, origin TEXT, ordered_qty REAL, unit_price REAL, total_value REAL,
+                    currency TEXT, bu_estimated_shipping_cost REAL, actual_shipping_cost_usd REAL, actual_shipping_cost_aed REAL, amount_saved REAL, forwarder_name TEXT, 
+                    marine_insurance TEXT, draft_doc_recv_date TEXT, final_draft_documents TEXT, original_documents_rcvd_date TEXT, dhl_supplier_to_office TEXT, 
+                    original_docs_sent_to_bank_date TEXT, dhl_office_to_adib TEXT, dhl_date_adib_to_ucb TEXT, dhl_adib_to_ucb TEXT, qty_shipped REAL, unit_price_shipped REAL,
+                    total_shipped_value REAL, supplier_invoice_no TEXT, supplier_invoice_date TEXT, etd TEXT, eta TEXT, logistics_status TEXT, b_l_no TEXT, bol_date TEXT, 
+                    shipping_line TEXT, cntr_20ft TEXT, cntr_40ft TEXT, techuip_invoice_no TEXT, techuip_invoice_value REAL, techuip_mot_approved_pi_no TEXT, techuip_mot_approved_pi_date TEXT,
+                    mot_pi_quantity REAL, approved_mot_unit_price_usd REAL, approved_mot_total_price_usd REAL, acd_cost_usd REAL, due_date TEXT, due_amount REAL, 
+                    advance_payment REAL, payment_date_adv TEXT, remaining_payment REAL, payment_date_rem TEXT, remarks_finance TEXT, file_name TEXT, separator_no TEXT, 
+                    orion_pr_no TEXT, orion_po_no TEXT, orion_sa TEXT, orion_grn TEXT, orion_bill_reg TEXT, orion_invoice_offshore1 TEXT, orion_invoice_offshore2 TEXT, 
+                    inspection_no TEXT, grn_no TEXT, author TEXT, approved_by TEXT, remarks_general TEXT, mot TEXT)''')
     
-    # Insert default admin if not exists (password: admin123)
     c.execute("SELECT * FROM users WHERE username='admin'")
     if not c.fetchone():
         hashed = hashlib.sha256("admin123".encode()).hexdigest()
         c.execute("INSERT INTO users VALUES ('admin', ?, 'Admin')", (hashed,))
-        
-        # Seed basic master lists data
         seed_data = [
             ('global_status', 'In Progress'), ('global_status', 'Completed'),
             ('logistics_status', 'Pending'), ('logistics_status', 'Shipped'),
             ('currency', 'USD'), ('currency', 'AED')
         ]
         c.executemany("INSERT OR IGNORE INTO master_lists (list_type, item_value) VALUES (?, ?)", seed_data)
-        
     conn.commit()
     conn.close()
 
 init_db()
 
-# --- HELPER FUNCTIONS ---
 def get_master_list(list_type):
     conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql_query("SELECT item_value FROM master_lists WHERE list_type=?", conn, params=(list_type,))
@@ -107,8 +84,8 @@ if not st.session_state['logged_in']:
             st.error("Invalid username or password")
     st.stop()
 
-# --- APP LAYOUT NAVIGATION ---
-st.sidebar.write(f"Logged in as: **{st.session_state['username']}** ({st.session_state['role']})")
+# --- SIDEBAR CONTROL DECK ---
+st.sidebar.write(f"User: **{st.session_state['username']}** ({st.session_state['role']})")
 if st.sidebar.button("Logout"):
     st.session_state['logged_in'] = False
     st.rerun()
@@ -119,9 +96,8 @@ if st.session_state['role'] == 'Admin':
 
 choice = st.sidebar.selectbox("Navigation Menu", menu)
 
-# --- FEATURE 1: DASHBOARD VIEW ---
+# --- DASHBOARD VIEW (UPGRADED) ---
 if choice == "Dashboard View":
-    st.subheader("📦 Shipments Overview")
     conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql_query("SELECT * FROM shipments", conn)
     conn.close()
@@ -129,22 +105,79 @@ if choice == "Dashboard View":
     if df.empty:
         st.info("No shipments found. Use 'Add Shipment' or 'Bulk Upload' to populate data.")
     else:
-        search_q = st.text_input("Search by Supplier, Brand, Model, or B/L No.")
+        # 1. NOTIFICATION CENTER (Automated Business Logic Alerts)
+        st.markdown("### 🔔 Operational Notifications & Attention Required")
+        alerts = []
+        for idx, row in df.iterrows():
+            if row['logistics_status'] == 'Pending' and pd.notna(row['etd']) and row['etd'] != '':
+                alerts.append(f"⚠️ **Delay Risk:** Shipment ID {row['id']} (Supplier: {row['supplier']}) is still marked 'Pending' but has an ETD listed ({row['etd']}).")
+            if row['logistics_status'] == 'Shipped' and (pd.isna(row['b_l_no']) or row['b_l_no'] == ''):
+                alerts.append(f"🛑 **Missing Documentation:** Shipment ID {row['id']} is 'Shipped' but has no B/L Number entered.")
+            if row['total_value'] > 50000:
+                alerts.append(f"💰 **High Value Alert:** Consignment ID {row['id']} exceeds $50,000 USD (Total: {row['total_value']}).")
+        
+        if alerts:
+            for alert in alerts[:5]: # Cap at 5 most critical to avoid clutter
+                st.warning(alert)
+        else:
+            st.success("✅ Clean Slate: No critical shipping or missing document risks detected.")
+            
+        st.markdown("---")
+        
+        # 2. REPORTING CARDS (KPIs)
+        st.markdown("### 📊 Executive Summary Reports")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Consignments", len(df))
+        m2.metric("In Progress Status", len(df[df['global_status'] == 'In Progress']))
+        m3.metric("Total Value Managed ($)", f"${df['total_value'].sum():,.2f}")
+        m4.metric("Total Shipping Cost Saved ($)", f"${df['amount_saved'].sum():,.2f}")
+        
+        # 3. ADVANCED FILTERS SECTION
+        st.markdown("#### 🔍 Filter Panel")
+        f_col1, f_col2, f_col3 = st.columns(3)
+        with f_col1:
+            filter_status = st.multiselect("Global Process Status", options=df['global_status'].unique())
+        with f_col2:
+            filter_supplier = st.multiselect("Filter by Supplier", options=df['supplier'].unique())
+        with f_col3:
+            filter_line = st.multiselect("Filter by Shipping Line", options=df['shipping_line'].unique())
+            
+        # Apply filters dynamically
+        if filter_status:
+            df = df[df['global_status'].isin(filter_status)]
+        if filter_supplier:
+            df = df[df['supplier'].isin(filter_supplier)]
+        if filter_line:
+            df = df[df['shipping_line'].isin(filter_line)]
+            
+        # Global Text Search Row
+        search_q = st.text_input("Global Keyword Search (PO No, BL No, Brand, Model, etc.)")
         if search_q:
             df = df[df.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)]
             
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Export Current View to CSV", csv, "shipment_report.csv", "text/csv")
-        
-        st.dataframe(df)
+        # 4. COLOR AND RISK FLAGS IN DATAFRAME
+        def highlight_risks(val_row):
+            color = ''
+            if val_row['logistics_status'] == 'Pending':
+                color = 'background-color: #fff3cd' # Light amber flag
+            elif val_row['logistics_status'] == 'Shipped' and not val_row['b_l_no']:
+                color = 'background-color: #f8d7da' # Light red flag
+            return [color] * len(val_row)
 
-# --- FEATURE 2: MANUAL ENTRY FORM WITH TABS ---
+        styled_df = df.style.apply(highlight_risks, axis=1)
+        
+        st.markdown("#### 📦 Filtered Master Table View")
+        st.dataframe(styled_df, use_container_width=True)
+        
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Export Current View to CSV Report", csv, "filtered_shipment_report.csv", "text/csv")
+
+# --- MANUAL ENTRY FORM ---
 elif choice == "Add Shipment":
     if st.session_state['role'] == 'Viewer':
         st.error("You do not have permission to add records.")
     else:
         st.subheader("📝 Enter New Shipment Case Details")
-        
         global_statuses = get_master_list('global_status')
         logistics_statuses = get_master_list('logistics_status')
         suppliers = get_master_list('supplier')
@@ -195,6 +228,7 @@ elif choice == "Add Shipment":
                 bu_est_ship = st.number_input("BU Estimated Shipping Cost", value=0.0)
                 act_ship_usd = st.number_input("Actual Shipping Cost USD", value=0.0)
                 act_ship_aed = st.number_input("Actual Shipping Cost AED", value=0.0)
+                amount_saved = bu_est_ship - act_ship_usd
 
         with tab3:
             col1, col2 = st.columns(2)
@@ -225,19 +259,17 @@ elif choice == "Add Shipment":
 
         with tab5:
             st.markdown("##### 🏢 Orion Routing Invoices")
-            st.info("💡 For standard routing (Supplier ➔ Offshore 1 ➔ Client), fill out Section A. For 4-step routing (Supplier ➔ Offshore 1 ➔ Offshore 2 ➔ Client), complete both sections.")
-            
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown("**Section A: Offshore Company 1 (Sells to Offshore 2 or Client)**")
+                st.markdown("**Section A: Offshore Company 1**")
                 orion_inv1 = st.text_input("Orion Invoice No (Offshore 1)")
                 orion_pr = st.text_input("Orion PR No")
                 orion_po = st.text_input("Orion PO No")
                 orion_sa = st.text_input("Orion SA")
                 orion_grn = st.text_input("Orion GRN")
             with col2:
-                st.markdown("**Section B: Offshore Company 2 (If applicable, sells to Client)**")
-                orion_inv2 = st.text_input("Orion Invoice No (Offshore 2 - Leave blank if step skipped)")
+                st.markdown("**Section B: Offshore Company 2**")
+                orion_inv2 = st.text_input("Orion Invoice No (Offshore 2)")
                 inspection_no = st.text_input("Inspection No.")
                 grn_no = st.text_input("GRN No.")
                 author = st.text_input("Author", value=st.session_state['username'])
@@ -250,17 +282,17 @@ elif choice == "Add Shipment":
                             global_status, month, supplier, brand, cat, approval, model, type, consignee, offshore_company,
                             ordered_qty, unit_price, total_value, currency, logistics_status, incoterm, origin, forwarder_name,
                             shipping_line, b_l_no, bol_date, etd, eta, cntr_20ft, cntr_40ft, bu_estimated_shipping_cost,
-                            actual_shipping_cost_usd, actual_shipping_cost_aed, draft_doc_recv_date, final_draft_documents,
+                            actual_shipping_cost_usd, actual_shipping_cost_aed, amount_saved, draft_doc_recv_date, final_draft_documents,
                             original_documents_rcvd_date, dhl_supplier_to_office, original_docs_sent_to_bank_date, dhl_office_to_adib,
                             dhl_date_adib_to_ucb, dhl_adib_to_ucb, supplier_pi_no, supplier_pi_date, supplier_payment_terms,
                             due_date, due_amount, advance_payment, remaining_payment, techuip_invoice_no, techuip_invoice_value,
                             orion_pr_no, orion_po_no, orion_sa, orion_grn, orion_invoice_offshore1, orion_invoice_offshore2, 
                             inspection_no, grn_no, author, remarks_general
-                         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                       (g_status, month, supplier, brand, cat, approval, model, item_type, consignee, offshore_co,
                        ordered_qty, unit_price, total_value, currency, log_status, incoterm, origin, forwarder,
                        shipping_line, bl_no, bol_date, etd, eta, cntr_20, cntr_40, bu_est_ship,
-                       act_ship_usd, act_ship_aed, draft_recv, final_draft,
+                       act_ship_usd, act_ship_aed, amount_saved, draft_recv, final_draft,
                        orig_recv, dhl_supp_office, docs_sent_bank_dt, dhl_office_adib,
                        dhl_dt_adib_ucb, dhl_adib_ucb, supp_pi_no, supp_pi_date, supp_pay_terms,
                        due_date, due_amount, adv_payment, rem_payment, techuip_inv, techuip_val,
@@ -270,56 +302,41 @@ elif choice == "Add Shipment":
             conn.close()
             st.success("Shipment added successfully!")
 
-# --- FEATURE 3: BULK IMPORT FROM SPREADSHEETS ---
+# --- BULK UPLOAD ---
 elif choice == "Bulk Upload (CSV/Excel)":
     if st.session_state['role'] == 'Viewer':
         st.error("You do not have permission to upload files.")
     else:
         st.subheader("📥 Mass Excel / CSV Data Upload")
-        st.markdown("Upload your existing tracking template sheet here. Ensure the columns loosely match your header naming conventions.")
-        
         uploaded_file = st.file_uploader("Choose a file", type=['csv', 'xlsx'])
         if uploaded_file is not None:
             try:
-                if uploaded_file.name.endswith('.csv'):
-                    uploaded_df = pd.read_csv(uploaded_file)
-                else:
-                    uploaded_df = pd.read_excel(uploaded_file)
-                
-                st.write("Preview of Uploaded Data (First 5 rows):")
+                uploaded_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+                st.write("Preview of Uploaded Data:")
                 st.dataframe(uploaded_df.head())
-                
                 if st.button("Confirm and Append to Main Database"):
                     conn = sqlite3.connect(DB_FILE)
                     uploaded_df.to_sql("shipments", conn, if_exists="append", index=False)
                     conn.close()
-                    st.success(f"Successfully processed and appended {len(uploaded_df)} records to your active tracker!")
+                    st.success("Successfully processed and appended records!")
             except Exception as e:
                 st.error(f"Error reading dataset parsing structure: {e}")
 
-# --- FEATURE 4: MASTER LIST MANAGEMENT (ADMIN ONLY) ---
+# --- SETTINGS MANAGEMENT ---
 elif choice == "Settings & Master Lists":
     st.subheader("⚙️ Control Dashboard Master Lists")
-    
     col1, col2 = st.columns(2)
     with col1:
         list_choice = st.selectbox("Select List to Manage", [
-            ('supplier', 'Suppliers List'),
-            ('brand', 'Brands List'),
-            ('forwarder', 'Forwarders List'),
-            ('shipping_line', 'Shipping Lines List'),
-            ('consignee', 'Consignees List'),
-            ('offshore_company', 'Internal Offshore Companies'),
-            ('global_status', 'Global System Process Statuses'),
+            ('supplier', 'Suppliers List'), ('brand', 'Brands List'), ('forwarder', 'Forwarders List'),
+            ('shipping_line', 'Shipping Lines List'), ('consignee', 'Consignees List'),
+            ('offshore_company', 'Internal Offshore Companies'), ('global_status', 'Global System Process Statuses'),
             ('logistics_status', 'Logistics Step Statuses')
         ], format_func=lambda x: x[1])
-        
         new_item = st.text_input(f"Add New Entry to {list_choice[1]}")
         if st.button("Add to Dropdowns"):
             add_master_item(list_choice[0], new_item)
             st.success(f"Added '{new_item}' successfully!")
-            
     with col2:
         st.write("Current configured values:")
-        current_items = get_master_list(list_choice[0])
-        st.write(current_items[1:])
+        st.write(get_master_list(list_choice[0])[1:])
