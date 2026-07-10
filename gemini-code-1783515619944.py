@@ -1,65 +1,99 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
+import psycopg2
+from psycopg2.extras import execute_values
+import os
 import hashlib
 
-# --- DATABASE SETUP ---
-DB_FILE = "shipment_tracker.db"
+# --- PRODUCTION CLOUD DATABASE SECURE FETCH ---
+# Fetches the hidden URL string you saved in your Render Environment tab
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
+def get_db_connection():
+    if not DATABASE_URL:
+        st.error("Missing Database Connection! Please add the 'DATABASE_URL' environment variable inside your Render dashboard.")
+        st.stop()
+    return psycopg2.connect(DATABASE_URL)
+
+def init_db(force_drop=False):
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS master_lists (id INTEGER PRIMARY KEY AUTOINCREMENT, list_type TEXT, item_value TEXT, UNIQUE(list_type, item_value))''')
+    
+    if force_drop:
+        c.execute("DROP TABLE IF EXISTS shipments CASCADE;")
+        c.execute("DROP TABLE IF EXISTS master_lists CASCADE;")
+        c.execute("DROP TABLE IF EXISTS users CASCADE;")
+    
+    # 1. Users Table
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    username TEXT PRIMARY KEY, 
+                    password TEXT, 
+                    role TEXT)''')
+    
+    # 2. Master Dropdowns Table
+    c.execute('''CREATE TABLE IF NOT EXISTS master_lists (
+                    id SERIAL PRIMARY KEY,
+                    list_type TEXT, 
+                    item_value TEXT,
+                    UNIQUE(list_type, item_value))''')
+    
+    # 3. Main Shipments Table (Cloud Optimized)
     c.execute('''CREATE TABLE IF NOT EXISTS shipments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, global_status TEXT, month TEXT, supplier TEXT, brand TEXT, cat TEXT, approval TEXT, model TEXT, type TEXT,
+                    id SERIAL PRIMARY KEY, global_status TEXT, month TEXT, supplier TEXT, brand TEXT, cat TEXT, approval TEXT, model TEXT, type TEXT,
                     consignee TEXT, offshore_company TEXT, supplier_pi_no TEXT, supplier_pi_date TEXT, supplier_payment_terms TEXT, received_signed_pi_date TEXT, sent_signed_pi_date TEXT, 
-                    bu_po_date TEXT, order_execution_date TEXT, latest_shipment_dt TEXT, incoterm TEXT, origin TEXT, ordered_qty REAL, unit_price REAL, total_value REAL,
-                    currency TEXT, bu_estimated_shipping_cost REAL, actual_shipping_cost_usd REAL, actual_shipping_cost_aed REAL, amount_saved REAL, forwarder_name TEXT, 
+                    bu_po_date TEXT, order_execution_date TEXT, latest_shipment_dt TEXT, incoterm TEXT, origin TEXT, ordered_qty NUMERIC, unit_price NUMERIC, total_value NUMERIC,
+                    currency TEXT, bu_estimated_shipping_cost NUMERIC, actual_shipping_cost_usd NUMERIC, actual_shipping_cost_aed NUMERIC, amount_saved NUMERIC, forwarder_name TEXT, 
                     marine_insurance TEXT, draft_doc_recv_date TEXT, final_draft_documents TEXT, original_documents_rcvd_date TEXT, dhl_supplier_to_office TEXT, 
-                    original_docs_sent_to_bank_date TEXT, dhl_office_to_adib TEXT, dhl_date_adib_to_ucb TEXT, dhl_adib_to_ucb TEXT, qty_shipped REAL, unit_price_shipped REAL,
-                    total_shipped_value REAL, supplier_invoice_no TEXT, supplier_invoice_date TEXT, etd TEXT, eta TEXT, logistics_status TEXT, b_l_no TEXT, bol_date TEXT, 
-                    shipping_line TEXT, cntr_20ft TEXT, cntr_40ft TEXT, techuip_invoice_no TEXT, techuip_invoice_value REAL, techuip_mot_approved_pi_no TEXT, techuip_mot_approved_pi_date TEXT,
-                    mot_pi_quantity REAL, approved_mot_unit_price_usd REAL, approved_mot_total_price_usd REAL, acd_cost_usd REAL, due_date TEXT, due_amount REAL, 
-                    advance_payment REAL, payment_date_adv TEXT, remaining_payment REAL, payment_date_rem TEXT, remarks_finance TEXT, file_name TEXT, separator_no TEXT, 
+                    original_docs_sent_to_bank_date TEXT, dhl_office_to_adib TEXT, dhl_date_adib_to_ucb TEXT, dhl_adib_to_ucb TEXT, qty_shipped NUMERIC, unit_price_shipped NUMERIC,
+                    total_shipped_value NUMERIC, supplier_invoice_no TEXT, supplier_invoice_date TEXT, etd TEXT, eta TEXT, logistics_status TEXT, b_l_no TEXT, bol_date TEXT, 
+                    shipping_line TEXT, cntr_20ft TEXT, cntr_40ft TEXT, techuip_invoice_no TEXT, techuip_invoice_value NUMERIC, techuip_mot_approved_pi_no TEXT, techuip_mot_approved_pi_date TEXT,
+                    mot_pi_quantity NUMERIC, approved_mot_unit_price_usd NUMERIC, approved_mot_total_price_usd NUMERIC, acd_cost_usd NUMERIC, due_date TEXT, due_amount NUMERIC, 
+                    advance_payment NUMERIC, payment_date_adv TEXT, remaining_payment NUMERIC, payment_date_rem TEXT, remarks_finance TEXT, file_name TEXT, separator_no TEXT, 
                     orion_pr_no TEXT, orion_po_no TEXT, orion_sa TEXT, orion_grn TEXT, orion_bill_reg TEXT, orion_invoice_offshore1 TEXT, orion_invoice_offshore2 TEXT, 
                     inspection_no TEXT, grn_no TEXT, author TEXT, approved_by TEXT, remarks_general TEXT, mot TEXT)''')
     
     c.execute("SELECT * FROM users WHERE username='admin'")
     if not c.fetchone():
         hashed = hashlib.sha256("admin123".encode()).hexdigest()
-        c.execute("INSERT INTO users VALUES ('admin', ?, 'Admin')", (hashed,))
+        c.execute("INSERT INTO users VALUES ('admin', %s, 'Admin')", (hashed,))
         seed_data = [
             ('global_status', 'In Progress'), ('global_status', 'Completed'),
             ('logistics_status', 'Pending'), ('logistics_status', 'Shipped'),
             ('currency', 'USD'), ('currency', 'AED')
         ]
-        c.executemany("INSERT OR IGNORE INTO master_lists (list_type, item_value) VALUES (?, ?)", seed_data)
+        for item in seed_data:
+            c.execute("INSERT INTO master_lists (list_type, item_value) VALUES (%s, %s) ON CONFLICT DO NOTHING", item)
+            
     conn.commit()
     conn.close()
 
-init_db()
+# Safe initial build check
+try:
+    init_db(force_drop=False)
+except Exception as e:
+    st.error(f"Database sync roadblock: {e}")
 
+# --- DYNAMIC INTERFACE UTILITIES ---
 def get_master_list(list_type):
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("SELECT item_value FROM master_lists WHERE list_type=?", conn, params=(list_type,))
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT item_value FROM master_lists WHERE list_type=%s", conn, params=(list_type,))
     conn.close()
     return [""] + df['item_value'].tolist()
 
 def add_master_item(list_type, val):
     if val:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         c = conn.cursor()
         try:
-            c.execute("INSERT INTO master_lists (list_type, item_value) VALUES (?, ?)", (list_type, val))
+            c.execute("INSERT INTO master_lists (list_type, item_value) VALUES (%s, %s) ON CONFLICT DO NOTHING", (list_type, val))
             conn.commit()
-        except sqlite3.IntegrityError:
+        except Exception:
             pass
         conn.close()
 
-# --- AUTHENTICATION ---
+# --- SECURITY GATE ---
 st.set_page_config(layout="wide", page_title="Global Shipment Tracker")
-st.title("🚢 Corporate Shipment Supply Chain Tracker")
+st.title("🚢 Corporate Shipment Supply Chain Tracker (Cloud Storage Live)")
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
@@ -70,9 +104,9 @@ if not st.session_state['logged_in']:
     password = st.text_input("Password", type="password")
     if st.button("Login"):
         hashed = hashlib.sha256(password.encode()).hexdigest()
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         c = conn.cursor()
-        c.execute("SELECT role FROM users WHERE username=? AND password=?", (username, hashed))
+        c.execute("SELECT role FROM users WHERE username=%s AND password=%s", (username, hashed))
         user = c.fetchone()
         conn.close()
         if user:
@@ -84,7 +118,7 @@ if not st.session_state['logged_in']:
             st.error("Invalid username or password")
     st.stop()
 
-# --- SIDEBAR CONTROL DECK ---
+# --- SIDEBAR NAV ---
 st.sidebar.write(f"User: **{st.session_state['username']}** ({st.session_state['role']})")
 if st.sidebar.button("Logout"):
     st.session_state['logged_in'] = False
@@ -96,43 +130,46 @@ if st.session_state['role'] == 'Admin':
 
 choice = st.sidebar.selectbox("Navigation Menu", menu)
 
-# --- DASHBOARD VIEW (UPGRADED) ---
+# --- DASHBOARD DECK ---
 if choice == "Dashboard View":
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("SELECT * FROM shipments", conn)
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT * FROM shipments ORDER BY id DESC", conn)
     conn.close()
     
     if df.empty:
-        st.info("No shipments found. Use 'Add Shipment' or 'Bulk Upload' to populate data.")
+        st.info("Cloud database is currently empty. Use 'Add Shipment' or 'Bulk Upload' to inject data rows.")
     else:
-        # 1. NOTIFICATION CENTER (Automated Business Logic Alerts)
-        st.markdown("### 🔔 Operational Notifications & Attention Required")
+        # Dynamic Risk Engine Banner
+        st.markdown("### 🔔 Operational Notifications")
         alerts = []
         for idx, row in df.iterrows():
             if row['logistics_status'] == 'Pending' and pd.notna(row['etd']) and row['etd'] != '':
-                alerts.append(f"⚠️ **Delay Risk:** Shipment ID {row['id']} (Supplier: {row['supplier']}) is still marked 'Pending' but has an ETD listed ({row['etd']}).")
-            if row['logistics_status'] == 'Shipped' and (pd.isna(row['b_l_no']) or row['b_l_no'] == ''):
-                alerts.append(f"🛑 **Missing Documentation:** Shipment ID {row['id']} is 'Shipped' but has no B/L Number entered.")
-            if row['total_value'] > 50000:
-                alerts.append(f"💰 **High Value Alert:** Consignment ID {row['id']} exceeds $50,000 USD (Total: {row['total_value']}).")
+                alerts.append(f"⚠️ **Delay Risk:** Shipment ID {row['id']} (Supplier: {row['supplier']}) is 'Pending' but has an ETD listed ({row['etd']}).")
+            if row['logistics_status'] == 'Shipped' and (not row['b_l_no'] or row['b_l_no'] == ''):
+                alerts.append(f"🛑 **Missing Documentation:** Shipment ID {row['id']} is 'Shipped' but has no B/L Number.")
+            if pd.to_numeric(row['total_value'], errors='coerce') > 50000:
+                alerts.append(f"💰 **High Value Alert:** Consignment ID {row['id']} exceeds $50,000 USD.")
         
         if alerts:
-            for alert in alerts[:5]: # Cap at 5 most critical to avoid clutter
+            for alert in alerts[:5]:
                 st.warning(alert)
         else:
-            st.success("✅ Clean Slate: No critical shipping or missing document risks detected.")
+            st.success("✅ Clean Slate: No critical shipping or document discrepancies flagged.")
             
         st.markdown("---")
         
-        # 2. REPORTING CARDS (KPIs)
+        # Reports Row
         st.markdown("### 📊 Executive Summary Reports")
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Consignments", len(df))
         m2.metric("In Progress Status", len(df[df['global_status'] == 'In Progress']))
-        m3.metric("Total Value Managed ($)", f"${df['total_value'].sum():,.2f}")
-        m4.metric("Total Shipping Cost Saved ($)", f"${df['amount_saved'].sum():,.2f}")
         
-        # 3. ADVANCED FILTERS SECTION
+        total_val = pd.to_numeric(df['total_value'], errors='coerce').sum()
+        total_saved = pd.to_numeric(df['amount_saved'], errors='coerce').sum()
+        m3.metric("Total Value Managed ($)", f"${total_val:,.2f}")
+        m4.metric("Total Shipping Cost Saved ($)", f"${total_saved:,.2f}")
+        
+        # Multi-filter block
         st.markdown("#### 🔍 Filter Panel")
         f_col1, f_col2, f_col3 = st.columns(3)
         with f_col1:
@@ -142,32 +179,16 @@ if choice == "Dashboard View":
         with f_col3:
             filter_line = st.multiselect("Filter by Shipping Line", options=df['shipping_line'].unique())
             
-        # Apply filters dynamically
-        if filter_status:
-            df = df[df['global_status'].isin(filter_status)]
-        if filter_supplier:
-            df = df[df['supplier'].isin(filter_supplier)]
-        if filter_line:
-            df = df[df['shipping_line'].isin(filter_line)]
+        if filter_status: df = df[df['global_status'].isin(filter_status)]
+        if filter_supplier: df = df[df['supplier'].isin(filter_supplier)]
+        if filter_line: df = df[df['shipping_line'].isin(filter_line)]
             
-        # Global Text Search Row
-        search_q = st.text_input("Global Keyword Search (PO No, BL No, Brand, Model, etc.)")
+        search_q = st.text_input("Global Keyword Search")
         if search_q:
             df = df[df.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)]
             
-        # 4. COLOR AND RISK FLAGS IN DATAFRAME
-        def highlight_risks(val_row):
-            color = ''
-            if val_row['logistics_status'] == 'Pending':
-                color = 'background-color: #fff3cd' # Light amber flag
-            elif val_row['logistics_status'] == 'Shipped' and not val_row['b_l_no']:
-                color = 'background-color: #f8d7da' # Light red flag
-            return [color] * len(val_row)
-
-        styled_df = df.style.apply(highlight_risks, axis=1)
-        
         st.markdown("#### 📦 Filtered Master Table View")
-        st.dataframe(styled_df, use_container_width=True)
+        st.dataframe(df, use_container_width=True)
         
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Export Current View to CSV Report", csv, "filtered_shipment_report.csv", "text/csv")
@@ -175,7 +196,7 @@ if choice == "Dashboard View":
 # --- MANUAL ENTRY FORM ---
 elif choice == "Add Shipment":
     if st.session_state['role'] == 'Viewer':
-        st.error("You do not have permission to add records.")
+        st.error("Action denied.")
     else:
         st.subheader("📝 Enter New Shipment Case Details")
         global_statuses = get_master_list('global_status')
@@ -276,7 +297,7 @@ elif choice == "Add Shipment":
                 remarks_gen = st.text_area("General Remarks")
 
         if st.button("💾 Save Shipment Entry"):
-            conn = sqlite3.connect(DB_FILE)
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute('''INSERT INTO shipments (
                             global_status, month, supplier, brand, cat, approval, model, type, consignee, offshore_company,
@@ -288,7 +309,7 @@ elif choice == "Add Shipment":
                             due_date, due_amount, advance_payment, remaining_payment, techuip_invoice_no, techuip_invoice_value,
                             orion_pr_no, orion_po_no, orion_sa, orion_grn, orion_invoice_offshore1, orion_invoice_offshore2, 
                             inspection_no, grn_no, author, remarks_general
-                         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                         ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
                       (g_status, month, supplier, brand, cat, approval, model, item_type, consignee, offshore_co,
                        ordered_qty, unit_price, total_value, currency, log_status, incoterm, origin, forwarder,
                        shipping_line, bl_no, bol_date, etd, eta, cntr_20, cntr_40, bu_est_ship,
@@ -300,12 +321,12 @@ elif choice == "Add Shipment":
                        inspection_no, grn_no, author, remarks_gen))
             conn.commit()
             conn.close()
-            st.success("Shipment added successfully!")
+            st.success("Shipment added securely to Cloud Storage!")
 
 # --- BULK UPLOAD ---
 elif choice == "Bulk Upload (CSV/Excel)":
     if st.session_state['role'] == 'Viewer':
-        st.error("You do not have permission to upload files.")
+        st.error("Permission denied.")
     else:
         st.subheader("📥 Mass Excel / CSV Data Upload")
         uploaded_file = st.file_uploader("Choose a file", type=['csv', 'xlsx'])
@@ -314,17 +335,45 @@ elif choice == "Bulk Upload (CSV/Excel)":
                 uploaded_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
                 st.write("Preview of Uploaded Data:")
                 st.dataframe(uploaded_df.head())
-                if st.button("Confirm and Append to Main Database"):
-                    conn = sqlite3.connect(DB_FILE)
-                    uploaded_df.to_sql("shipments", conn, if_exists="append", index=False)
+                
+                if st.button("Confirm and Append to Cloud Storage"):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    
+                    # Columns configuration matching cloud schema
+                    columns = [c for c in uploaded_df.columns if c in [
+                        'global_status', 'month', 'supplier', 'brand', 'cat', 'approval', 'model', 'type', 'consignee', 'offshore_company',
+                        'ordered_qty', 'unit_price', 'total_value', 'currency', 'logistics_status', 'orion_invoice_offshore1', 'orion_invoice_offshore2'
+                    ]]
+                    
+                    for _, row in uploaded_df[columns].iterrows():
+                        row_vals = [None if pd.isna(val) else val for val in row.values]
+                        placeholders = ", ".join(["%s"] * len(columns))
+                        sql = f"INSERT INTO shipments ({', '.join(columns)}) VALUES ({placeholders})"
+                        cursor.execute(sql, row_vals)
+                        
+                    conn.commit()
                     conn.close()
-                    st.success("Successfully processed and appended records!")
+                    st.success("Successfully processed and saved records to database cloud!")
             except Exception as e:
-                st.error(f"Error reading dataset parsing structure: {e}")
+                st.error(f"Error parsing dataset parsing structure: {e}")
 
-# --- SETTINGS MANAGEMENT ---
+# --- SYSTEM SETTINGS PANEL ---
 elif choice == "Settings & Master Lists":
     st.subheader("⚙️ Control Dashboard Master Lists")
+    
+    # SYSTEM RESET TRIGGER (FOR CLEAN REBOOTS FROM SCRATCH)
+    st.markdown("### ⚠️ Danger Zone")
+    st.markdown("Need to change headers, start an entirely new layout, or clear out experimental data? Use this button to clear the tables.")
+    if st.button("💣 Nuke & Reset Database Structure"):
+        try:
+            init_db(force_drop=True)
+            st.success("Cloud database successfully wiped clean! The app schema has been rebuilt from scratch.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Reset failed: {e}")
+            
+    st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
         list_choice = st.selectbox("Select List to Manage", [
