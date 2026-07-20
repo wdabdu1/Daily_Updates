@@ -1,8 +1,8 @@
+from datetime import date
 import hashlib
 import os
 import pandas as pd
 import psycopg2
-from psycopg2.extras import execute_values
 import streamlit as st
 
 # --- PRODUCTION CLOUD DATABASE CONNECTION ---
@@ -44,7 +44,6 @@ def init_db(force_drop=False):
                     item_name VARCHAR(100),
                     is_active BOOLEAN DEFAULT TRUE)""")
 
-    # Cleanup any existing duplicate entries in ref_lists
     c.execute("""
         DELETE FROM ref_lists a USING ref_lists b 
         WHERE a.id < b.id AND a.category = b.category AND a.item_name = b.item_name;
@@ -77,6 +76,58 @@ def init_db(force_drop=False):
                     ordered_qty NUMERIC(15, 2), 
                     supplier_unit_price NUMERIC(15, 2))""")
 
+    # 6. Task Definitions (Standard clearance workflow steps)
+    c.execute("""CREATE TABLE IF NOT EXISTS task_definitions (
+                    task_def_id SERIAL PRIMARY KEY,
+                    step_order INT UNIQUE,
+                    task_name VARCHAR(100),
+                    department VARCHAR(50),
+                    sla_days INT)""")
+
+    # Seed Task Definitions if empty
+    c.execute("SELECT COUNT(*) FROM task_definitions")
+    if c.fetchone()[0] == 0:
+        default_tasks = [
+            (1, "ACD Approval", "Compliance", 2),
+            (2, "SSMO License & Exemption", "Regulatory", 3),
+            (3, "Customs Duty Assessment", "Customs", 2),
+            (4, "Port Release & Payment", "Logistics", 2),
+            (5, "Final Warehouse Delivery", "Operations", 1),
+        ]
+        for t in default_tasks:
+            c.execute(
+                "INSERT INTO task_definitions (step_order, task_name, department, sla_days) VALUES (%s, %s, %s, %s)",
+                t,
+            )
+
+    # 7. Shipments Table
+    c.execute("""CREATE TABLE IF NOT EXISTS shipments (
+                    shipment_id SERIAL PRIMARY KEY,
+                    shipment_ref VARCHAR(50) UNIQUE,
+                    order_id INTEGER REFERENCES master_orders(order_id) ON DELETE CASCADE,
+                    bl_awb VARCHAR(100),
+                    eta DATE,
+                    status VARCHAR(50) DEFAULT 'In Clearance',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)""")
+
+    # 8. Shipment Contents Table
+    c.execute("""CREATE TABLE IF NOT EXISTS shipment_contents (
+                    content_id SERIAL PRIMARY KEY,
+                    shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
+                    item_id INTEGER REFERENCES order_items(item_id),
+                    shipped_qty NUMERIC(15, 2))""")
+
+    # 9. Shipment Clearance Tasks Table
+    c.execute("""CREATE TABLE IF NOT EXISTS shipment_tasks (
+                    task_id SERIAL PRIMARY KEY,
+                    shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
+                    step_order INT,
+                    task_name VARCHAR(100),
+                    department VARCHAR(50),
+                    status VARCHAR(50) DEFAULT 'Pending',
+                    notes TEXT,
+                    completed_at TIMESTAMP WITH TIME ZONE)""")
+
     # Seed Admin user if missing
     c.execute("SELECT * FROM users WHERE username='admin'")
     if not c.fetchone():
@@ -86,7 +137,7 @@ def init_db(force_drop=False):
             (hashed,),
         )
 
-    # Seed reference dropdowns ONLY IF ref_lists table is completely empty
+    # Seed reference dropdowns ONLY IF empty
     c.execute("SELECT COUNT(*) FROM ref_lists")
     if c.fetchone()[0] == 0:
         seed_ref = [
@@ -107,7 +158,7 @@ def init_db(force_drop=False):
                 r,
             )
 
-    # Seed catalog items ONLY IF product_catalog table is empty
+    # Seed catalog items ONLY IF empty
     c.execute("SELECT COUNT(*) FROM product_catalog")
     if c.fetchone()[0] == 0:
         seed_catalog = [
@@ -197,7 +248,11 @@ if st.sidebar.button("Logout"):
     st.session_state["logged_in"] = False
     st.rerun()
 
-menu = ["Master Orders Dashboard", "Create Master Order"]
+menu = [
+    "Master Orders Dashboard",
+    "Create Master Order",
+    "Shipments & Task Manager",
+]
 if st.session_state["role"] == "Admin":
     menu.append("Settings & Product Catalog")
 
@@ -240,17 +295,22 @@ if choice == "Master Orders Dashboard":
             items_df = pd.read_sql_query(
                 """
                 SELECT oi.item_id, oi.model_product, pc.description, pc.category, 
-                       oi.ordered_qty, oi.supplier_unit_price, 
+                       oi.ordered_qty, 
+                       COALESCE(SUM(sc.shipped_qty), 0) as shipped_qty,
+                       (oi.ordered_qty - COALESCE(SUM(sc.shipped_qty), 0)) as remaining_qty,
+                       oi.supplier_unit_price, 
                        (oi.ordered_qty * oi.supplier_unit_price) as line_total
                 FROM order_items oi
                 JOIN master_orders mo ON oi.order_id = mo.order_id
                 LEFT JOIN product_catalog pc ON oi.model_product = pc.model_code
+                LEFT JOIN shipment_contents sc ON oi.item_id = sc.item_id
                 WHERE mo.po_number = %s
+                GROUP BY oi.item_id, oi.model_product, pc.description, pc.category, oi.ordered_qty, oi.supplier_unit_price
             """,
                 conn,
                 params=(selected_po,),
             )
-            st.write(f"**Line Items for PO:** `{selected_po}`")
+            st.write(f"**Line Items & Shipping Balance for PO:** `{selected_po}`")
             st.dataframe(items_df, use_container_width=True)
 
     conn.close()
@@ -268,7 +328,6 @@ elif choice == "Create Master Order":
         incoterm_options = get_ref_list("Incoterm")
         approval_options = get_ref_list("Approval")
 
-        # Get Catalog Products (distinct)
         conn = get_db_connection()
         catalog_df = pd.read_sql_query(
             "SELECT DISTINCT model_code, description, category, standard_unit_price FROM product_catalog ORDER BY model_code",
@@ -279,7 +338,6 @@ elif choice == "Create Master Order":
         catalog_map = catalog_df.set_index("model_code").to_dict("index")
         catalog_codes = catalog_df["model_code"].tolist()
 
-        # 1. Header Section
         st.markdown("### 1. Header Details")
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -346,7 +404,6 @@ elif choice == "Create Master Order":
                     conn = get_db_connection()
                     cur = conn.cursor()
 
-                    # Insert Header
                     cur.execute(
                         """
                         INSERT INTO master_orders (po_number, bu_id, supplier_id, currency, incoterm, approval_type)
@@ -357,7 +414,6 @@ elif choice == "Create Master Order":
                     )
                     order_id = cur.fetchone()[0]
 
-                    # Insert Items
                     for _, row in edited_df.iterrows():
                         model_code = row["Model Product Code"]
                         qty = row["Ordered Qty"]
@@ -378,6 +434,204 @@ elif choice == "Create Master Order":
                     )
                 except Exception as ex:
                     st.error(f"Failed to save order: {ex}")
+
+# --- SHIPMENTS & TASK MANAGER ---
+elif choice == "Shipments & Task Manager":
+    st.subheader("🚚 Shipments & Sequential Clearance Manager")
+
+    s_tab1, s_tab2 = st.tabs(["Create New Shipment", "Clearance Task Engine"])
+
+    # 1. Create New Shipment
+    with s_tab1:
+        st.markdown("#### Create Partial or Full Shipment")
+        conn = get_db_connection()
+        po_df = pd.read_sql_query("SELECT order_id, po_number FROM master_orders ORDER BY order_id DESC", conn)
+        conn.close()
+
+        if po_df.empty:
+            st.warning("No Master Orders available. Please create a Master Order first.")
+        else:
+            po_map = dict(zip(po_df["po_number"], po_df["order_id"]))
+            selected_po_ref = st.selectbox("Select Master Order (PO #)", list(po_map.keys()))
+            selected_order_id = po_map[selected_po_ref]
+
+            # Fetch line items with calculated remaining quantity
+            conn = get_db_connection()
+            items_df = pd.read_sql_query("""
+                SELECT oi.item_id, oi.model_product, oi.ordered_qty,
+                       COALESCE(SUM(sc.shipped_qty), 0) as total_shipped,
+                       (oi.ordered_qty - COALESCE(SUM(sc.shipped_qty), 0)) as remaining_qty
+                FROM order_items oi
+                LEFT JOIN shipment_contents sc ON oi.item_id = sc.item_id
+                WHERE oi.order_id = %s
+                GROUP BY oi.item_id, oi.model_product, oi.ordered_qty
+            """, conn, params=(selected_order_id,))
+            conn.close()
+
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1:
+                shp_ref = st.text_input("Shipment Ref / Docket # *", value=f"SHP-{selected_po_ref}-1")
+            with col_s2:
+                bl_awb = st.text_input("BL / AWB Number *")
+            with col_s3:
+                eta_date = st.date_input("Estimated Time of Arrival (ETA)", value=date.today())
+
+            st.markdown("##### Allocate Quantities for this Shipment")
+            
+            # Prepare interactive allocation table
+            allocation_data = []
+            for _, r in items_df.iterrows():
+                allocation_data.append({
+                    "Item ID": r["item_id"],
+                    "Product Code": r["model_product"],
+                    "Total Ordered": float(r["ordered_qty"]),
+                    "Already Shipped": float(r["total_shipped"]),
+                    "Remaining Balance": float(r["remaining_qty"]),
+                    "Ship Quantity": float(r["remaining_qty"])  # default to remaining
+                })
+
+            alloc_df = pd.DataFrame(allocation_data)
+            edited_alloc = st.data_editor(
+                alloc_df,
+                disabled=["Item ID", "Product Code", "Total Ordered", "Already Shipped", "Remaining Balance"],
+                column_config={
+                    "Ship Quantity": st.column_config.NumberColumn("Ship Quantity", min_value=0.0)
+                },
+                use_container_width=True
+            )
+
+            if st.button("🚀 Confirm & Dispatch Shipment", type="primary"):
+                if not shp_ref or not bl_awb:
+                    st.error("Shipment Ref and BL/AWB Number are required!")
+                else:
+                    try:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+
+                        # Insert shipment header
+                        cur.execute("""
+                            INSERT INTO shipments (shipment_ref, order_id, bl_awb, eta, status)
+                            VALUES (%s, %s, %s, %s, 'In Clearance')
+                            RETURNING shipment_id;
+                        """, (shp_ref, selected_order_id, bl_awb, eta_date))
+                        shipment_id = cur.fetchone()[0]
+
+                        # Insert shipment contents
+                        for _, row in edited_alloc.iterrows():
+                            ship_qty = row["Ship Quantity"]
+                            item_id = int(row["Item ID"])
+                            if ship_qty > 0:
+                                cur.execute("""
+                                    INSERT INTO shipment_contents (shipment_id, item_id, shipped_qty)
+                                    VALUES (%s, %s, %s);
+                                """, (shipment_id, item_id, ship_qty))
+
+                        # Auto-generate task pipeline from task_definitions
+                        cur.execute("SELECT step_order, task_name, department FROM task_definitions ORDER BY step_order ASC")
+                        defs = cur.fetchall()
+
+                        for idx, d in enumerate(defs):
+                            step_ord, t_name, dept = d
+                            # First step is 'In Progress', rest are 'Pending' (locked)
+                            initial_status = "In Progress" if idx == 0 else "Pending"
+                            cur.execute("""
+                                INSERT INTO shipment_tasks (shipment_id, step_order, task_name, department, status)
+                                VALUES (%s, %s, %s, %s, %s);
+                            """, (shipment_id, step_ord, t_name, dept, initial_status))
+
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Shipment **{shp_ref}** created and clearance tasks initiated!")
+                        st.rerun()
+                    except Exception as e_shp:
+                        st.error(f"Failed to create shipment: {e_shp}")
+
+    # 2. Clearance Task Board Engine
+    with s_tab2:
+        st.markdown("#### Sequential Clearance Pipeline")
+        conn = get_db_connection()
+        shipments_df = pd.read_sql_query("""
+            SELECT s.shipment_id, s.shipment_ref, s.bl_awb, s.eta, s.status, mo.po_number
+            FROM shipments s
+            JOIN master_orders mo ON s.order_id = mo.order_id
+            ORDER BY s.shipment_id DESC
+        """, conn)
+        conn.close()
+
+        if shipments_df.empty:
+            st.info("No active shipments found. Create one under 'Create New Shipment'.")
+        else:
+            selected_shp_ref = st.selectbox("Select Active Shipment to Manage", shipments_df["shipment_ref"].tolist())
+            shp_row = shipments_df[shipments_df["shipment_ref"] == selected_shp_ref].iloc[0]
+            shp_id = int(shp_row["shipment_id"])
+
+            st.info(f"**PO:** `{shp_row['po_number']}` | **BL/AWB:** `{shp_row['bl_awb']}` | **ETA:** `{shp_row['eta']}` | **Status:** `{shp_row['status']}`")
+
+            # Fetch tasks for this shipment
+            conn = get_db_connection()
+            tasks_df = pd.read_sql_query("""
+                SELECT task_id, step_order, task_name, department, status, notes, completed_at
+                FROM shipment_tasks
+                WHERE shipment_id = %s
+                ORDER BY step_order ASC
+            """, conn, params=(shp_id,))
+            conn.close()
+
+            st.markdown("---")
+            st.markdown("### Step-by-Step Task Workflow")
+
+            # Blocking Logic: Task N can only be updated if Task N-1 is 'Completed'
+            previous_completed = True
+
+            for _, task in tasks_df.iterrows():
+                t_id = task["task_id"]
+                step = task["step_order"]
+                t_name = task["task_name"]
+                dept = task["department"]
+                status = task["status"]
+                notes = task["notes"] if task["notes"] else ""
+                completed_at = task["completed_at"]
+
+                with st.expander(f"Step {step}: {t_name} ({dept}) - **{status}**", expanded=(status == "In Progress")):
+                    if status == "Completed":
+                        st.success(f"✅ Completed at: {completed_at}")
+                        st.write(f"**Notes/Reference:** {notes}")
+                        previous_completed = True
+                    elif status == "In Progress" and previous_completed:
+                        st.warning("⏳ Task is ready for clearance action.")
+                        task_notes = st.text_area(f"Notes / Approval Reference for Step {step}", value=notes, key=f"note_{t_id}")
+                        if st.button(f"Mark Step {step} as Completed", key=f"btn_{t_id}", type="primary"):
+                            conn = get_db_connection()
+                            cur = conn.cursor()
+
+                            # Complete current task
+                            cur.execute("""
+                                UPDATE shipment_tasks 
+                                SET status = 'Completed', notes = %s, completed_at = CURRENT_TIMESTAMP
+                                WHERE task_id = %s;
+                            """, (task_notes, t_id))
+
+                            # Unlock next step if exists
+                            cur.execute("""
+                                UPDATE shipment_tasks
+                                SET status = 'In Progress'
+                                WHERE shipment_id = %s AND step_order = %s;
+                            """, (shp_id, step + 1))
+
+                            # If last step, mark shipment as Delivered
+                            cur.execute("SELECT COUNT(*) FROM shipment_tasks WHERE shipment_id = %s AND status != 'Completed'", (shp_id,))
+                            remaining_tasks = cur.fetchone()[0]
+                            if remaining_tasks == 0:
+                                cur.execute("UPDATE shipments SET status = 'Delivered' WHERE shipment_id = %s", (shp_id,))
+
+                            conn.commit()
+                            conn.close()
+                            st.success(f"Step {step} marked as Completed!")
+                            st.rerun()
+                        previous_completed = False
+                    else:
+                        st.error("🔒 Locked: Complete the previous step first.")
+                        previous_completed = False
 
 # --- SETTINGS & PRODUCT CATALOG ---
 elif choice == "Settings & Product Catalog":
