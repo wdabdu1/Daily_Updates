@@ -1,71 +1,113 @@
-import streamlit as st
+import hashlib
+import os
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
-import os
-import hashlib
+import streamlit as st
 
-# --- PRODUCTION CLOUD DATABASE SECURE FETCH ---
-# Fetches the hidden URL string you saved in your Render Environment tab
+# --- PRODUCTION CLOUD DATABASE CONNECTION ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
 
 def get_db_connection():
     if not DATABASE_URL:
-        st.error("Missing Database Connection! Please add the 'DATABASE_URL' environment variable inside your Render dashboard.")
+        st.error(
+            "Missing Database Connection! Please add the 'DATABASE_URL' environment variable inside your Render dashboard."
+        )
         st.stop()
     return psycopg2.connect(DATABASE_URL)
+
 
 def init_db(force_drop=False):
     conn = get_db_connection()
     c = conn.cursor()
-    
+
     if force_drop:
-        c.execute("DROP TABLE IF EXISTS shipments CASCADE;")
-        c.execute("DROP TABLE IF EXISTS master_lists CASCADE;")
-        c.execute("DROP TABLE IF EXISTS users CASCADE;")
-    
+        c.execute(
+            "DROP TABLE IF EXISTS audit_logs, financial_ledger, shipment_tasks, shipment_contents, shipments, order_items, product_catalog, master_orders, users, holiday_calendar, task_definitions, ref_lists CASCADE;"
+        )
+
     # 1. Users Table
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
                     username TEXT PRIMARY KEY, 
                     password TEXT, 
-                    role TEXT)''')
-    
-    # 2. Master Dropdowns Table
-    c.execute('''CREATE TABLE IF NOT EXISTS master_lists (
+                    role TEXT)""")
+
+    # 2. Master Dropdowns / Ref Lists
+    c.execute("""CREATE TABLE IF NOT EXISTS ref_lists (
                     id SERIAL PRIMARY KEY,
-                    list_type TEXT, 
-                    item_value TEXT,
-                    UNIQUE(list_type, item_value))''')
-    
-    # 3. Main Shipments Table (Cloud Optimized)
-    c.execute('''CREATE TABLE IF NOT EXISTS shipments (
-                    id SERIAL PRIMARY KEY, global_status TEXT, month TEXT, supplier TEXT, brand TEXT, cat TEXT, approval TEXT, model TEXT, type TEXT,
-                    consignee TEXT, offshore_company TEXT, supplier_pi_no TEXT, supplier_pi_date TEXT, supplier_payment_terms TEXT, received_signed_pi_date TEXT, sent_signed_pi_date TEXT, 
-                    bu_po_date TEXT, order_execution_date TEXT, latest_shipment_dt TEXT, incoterm TEXT, origin TEXT, ordered_qty NUMERIC, unit_price NUMERIC, total_value NUMERIC,
-                    currency TEXT, bu_estimated_shipping_cost NUMERIC, actual_shipping_cost_usd NUMERIC, actual_shipping_cost_aed NUMERIC, amount_saved NUMERIC, forwarder_name TEXT, 
-                    marine_insurance TEXT, draft_doc_recv_date TEXT, final_draft_documents TEXT, original_documents_rcvd_date TEXT, dhl_supplier_to_office TEXT, 
-                    original_docs_sent_to_bank_date TEXT, dhl_office_to_adib TEXT, dhl_date_adib_to_ucb TEXT, dhl_adib_to_ucb TEXT, qty_shipped NUMERIC, unit_price_shipped NUMERIC,
-                    total_shipped_value NUMERIC, supplier_invoice_no TEXT, supplier_invoice_date TEXT, etd TEXT, eta TEXT, logistics_status TEXT, b_l_no TEXT, bol_date TEXT, 
-                    shipping_line TEXT, cntr_20ft TEXT, cntr_40ft TEXT, techuip_invoice_no TEXT, techuip_invoice_value NUMERIC, techuip_mot_approved_pi_no TEXT, techuip_mot_approved_pi_date TEXT,
-                    mot_pi_quantity NUMERIC, approved_mot_unit_price_usd NUMERIC, approved_mot_total_price_usd NUMERIC, acd_cost_usd NUMERIC, due_date TEXT, due_amount NUMERIC, 
-                    advance_payment NUMERIC, payment_date_adv TEXT, remaining_payment NUMERIC, payment_date_rem TEXT, remarks_finance TEXT, file_name TEXT, separator_no TEXT, 
-                    orion_pr_no TEXT, orion_po_no TEXT, orion_sa TEXT, orion_grn TEXT, orion_bill_reg TEXT, orion_invoice_offshore1 TEXT, orion_invoice_offshore2 TEXT, 
-                    inspection_no TEXT, grn_no TEXT, author TEXT, approved_by TEXT, remarks_general TEXT, mot TEXT)''')
-    
+                    category VARCHAR(50), 
+                    item_name VARCHAR(100),
+                    is_active BOOLEAN DEFAULT TRUE,
+                    UNIQUE(category, item_name))""")
+
+    # 3. Product Catalog
+    c.execute("""CREATE TABLE IF NOT EXISTS product_catalog (
+                    product_id SERIAL PRIMARY KEY,
+                    model_code VARCHAR(50) UNIQUE,
+                    description TEXT,
+                    category VARCHAR(50),
+                    standard_unit_price NUMERIC(15, 2))""")
+
+    # 4. Master Orders
+    c.execute("""CREATE TABLE IF NOT EXISTS master_orders (
+                    order_id SERIAL PRIMARY KEY, 
+                    po_number VARCHAR(50) UNIQUE, 
+                    bu_id VARCHAR(20), 
+                    supplier_id VARCHAR(100), 
+                    currency VARCHAR(10), 
+                    incoterm VARCHAR(20), 
+                    approval_type VARCHAR(50), 
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)""")
+
+    # 5. Order Items
+    c.execute("""CREATE TABLE IF NOT EXISTS order_items (
+                    item_id SERIAL PRIMARY KEY, 
+                    order_id INTEGER REFERENCES master_orders(order_id) ON DELETE CASCADE, 
+                    model_product VARCHAR(100), 
+                    ordered_qty NUMERIC(15, 2), 
+                    supplier_unit_price NUMERIC(15, 2))""")
+
+    # Seed Admin & Sample Data if missing
     c.execute("SELECT * FROM users WHERE username='admin'")
     if not c.fetchone():
         hashed = hashlib.sha256("admin123".encode()).hexdigest()
         c.execute("INSERT INTO users VALUES ('admin', %s, 'Admin')", (hashed,))
-        seed_data = [
-            ('global_status', 'In Progress'), ('global_status', 'Completed'),
-            ('logistics_status', 'Pending'), ('logistics_status', 'Shipped'),
-            ('currency', 'USD'), ('currency', 'AED')
+
+        # Seed sample product catalog items
+        seed_catalog = [
+            ("LAP-100", "ThinkPad T14", "Electronics", 1200.00),
+            ("LAP-200", "MacBook Pro", "Electronics", 2000.00),
+            ("MOT-550", "Heavy Duty Motor", "Machinery", 4500.00),
         ]
-        for item in seed_data:
-            c.execute("INSERT INTO master_lists (list_type, item_value) VALUES (%s, %s) ON CONFLICT DO NOTHING", item)
-            
+        for p in seed_catalog:
+            c.execute(
+                "INSERT INTO product_catalog (model_code, description, category, standard_unit_price) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                p,
+            )
+
+        # Seed initial dropdown reference items
+        seed_ref = [
+            ("BU", "Consumer Electronics"),
+            ("BU", "Heavy Machinery"),
+            ("Supplier", "Global Tech Offshore"),
+            ("Supplier", "Industrial Parts LLC"),
+            ("Currency", "USD"),
+            ("Currency", "EUR"),
+            ("Incoterm", "FOB"),
+            ("Incoterm", "CIF"),
+            ("Approval", "Standard"),
+            ("Approval", "Director"),
+        ]
+        for r in seed_ref:
+            c.execute(
+                "INSERT INTO ref_lists (category, item_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                r,
+            )
+
     conn.commit()
     conn.close()
+
 
 # Safe initial build check
 try:
@@ -73,32 +115,42 @@ try:
 except Exception as e:
     st.error(f"Database sync roadblock: {e}")
 
-# --- DYNAMIC INTERFACE UTILITIES ---
-def get_master_list(list_type):
-    conn = get_db_connection()
-    df = pd.read_sql_query("SELECT item_value FROM master_lists WHERE list_type=%s", conn, params=(list_type,))
-    conn.close()
-    return [""] + df['item_value'].tolist()
 
-def add_master_item(list_type, val):
+# --- DYNAMIC INTERFACE UTILITIES ---
+def get_ref_list(category):
+    conn = get_db_connection()
+    df = pd.read_sql_query(
+        "SELECT item_name FROM ref_lists WHERE category=%s AND is_active=TRUE",
+        conn,
+        params=(category,),
+    )
+    conn.close()
+    return df["item_name"].tolist()
+
+
+def add_ref_item(category, val):
     if val:
         conn = get_db_connection()
         c = conn.cursor()
         try:
-            c.execute("INSERT INTO master_lists (list_type, item_value) VALUES (%s, %s) ON CONFLICT DO NOTHING", (list_type, val))
+            c.execute(
+                "INSERT INTO ref_lists (category, item_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (category, val),
+            )
             conn.commit()
         except Exception:
             pass
         conn.close()
 
+
 # --- SECURITY GATE ---
-st.set_page_config(layout="wide", page_title="Global Shipment Tracker")
-st.title("🚢 Corporate Shipment Supply Chain Tracker (Cloud Storage Live)")
+st.set_page_config(layout="wide", page_title="Corporate Supply Chain Tracker")
+st.title("🚢 Corporate Supply Chain Tracker (Neon Cloud Live)")
 
-if 'logged_in' not in st.session_state:
-    st.session_state['logged_in'] = False
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
 
-if not st.session_state['logged_in']:
+if not st.session_state["logged_in"]:
     st.subheader("User Authentication")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
@@ -106,286 +158,259 @@ if not st.session_state['logged_in']:
         hashed = hashlib.sha256(password.encode()).hexdigest()
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("SELECT role FROM users WHERE username=%s AND password=%s", (username, hashed))
+        c.execute(
+            "SELECT role FROM users WHERE username=%s AND password=%s",
+            (username, hashed),
+        )
         user = c.fetchone()
         conn.close()
         if user:
-            st.session_state['logged_in'] = True
-            st.session_state['username'] = username
-            st.session_state['role'] = user[0]
+            st.session_state["logged_in"] = True
+            st.session_state["username"] = username
+            st.session_state["role"] = user[0]
             st.rerun()
         else:
             st.error("Invalid username or password")
     st.stop()
 
 # --- SIDEBAR NAV ---
-st.sidebar.write(f"User: **{st.session_state['username']}** ({st.session_state['role']})")
+st.sidebar.write(
+    f"User: **{st.session_state['username']}** ({st.session_state['role']})"
+)
 if st.sidebar.button("Logout"):
-    st.session_state['logged_in'] = False
+    st.session_state["logged_in"] = False
     st.rerun()
 
-menu = ["Dashboard View", "Add Shipment", "Bulk Upload (CSV/Excel)"]
-if st.session_state['role'] == 'Admin':
-    menu.append("Settings & Master Lists")
+menu = ["Master Orders Dashboard", "Create Master Order"]
+if st.session_state["role"] == "Admin":
+    menu.append("Settings & Product Catalog")
 
 choice = st.sidebar.selectbox("Navigation Menu", menu)
 
-# --- DASHBOARD DECK ---
-if choice == "Dashboard View":
+# --- MASTER ORDERS DASHBOARD ---
+if choice == "Master Orders Dashboard":
+    st.subheader("📦 Master Orders Overview")
     conn = get_db_connection()
-    df = pd.read_sql_query("SELECT * FROM shipments ORDER BY id DESC", conn)
-    conn.close()
-    
-    if df.empty:
-        st.info("Cloud database is currently empty. Use 'Add Shipment' or 'Bulk Upload' to inject data rows.")
+    orders_df = pd.read_sql_query(
+        """
+        SELECT mo.order_id, mo.po_number, mo.bu_id, mo.supplier_id, mo.currency, 
+               mo.incoterm, mo.approval_type, mo.created_at,
+               COUNT(oi.item_id) as total_items,
+               COALESCE(SUM(oi.ordered_qty * oi.supplier_unit_price), 0) as total_order_value
+        FROM master_orders mo
+        LEFT JOIN order_items oi ON mo.order_id = oi.order_id
+        GROUP BY mo.order_id
+        ORDER BY mo.order_id DESC
+    """,
+        conn,
+    )
+
+    if orders_df.empty:
+        st.info("No Master Orders found. Use 'Create Master Order' to add one.")
     else:
-        # Dynamic Risk Engine Banner
-        st.markdown("### 🔔 Operational Notifications")
-        alerts = []
-        for idx, row in df.iterrows():
-            if row['logistics_status'] == 'Pending' and pd.notna(row['etd']) and row['etd'] != '':
-                alerts.append(f"⚠️ **Delay Risk:** Shipment ID {row['id']} (Supplier: {row['supplier']}) is 'Pending' but has an ETD listed ({row['etd']}).")
-            if row['logistics_status'] == 'Shipped' and (not row['b_l_no'] or row['b_l_no'] == ''):
-                alerts.append(f"🛑 **Missing Documentation:** Shipment ID {row['id']} is 'Shipped' but has no B/L Number.")
-            if pd.to_numeric(row['total_value'], errors='coerce') > 50000:
-                alerts.append(f"💰 **High Value Alert:** Consignment ID {row['id']} exceeds $50,000 USD.")
-        
-        if alerts:
-            for alert in alerts[:5]:
-                st.warning(alert)
-        else:
-            st.success("✅ Clean Slate: No critical shipping or document discrepancies flagged.")
-            
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Master Orders", len(orders_df))
+        total_val = orders_df["total_order_value"].sum()
+        m2.metric("Total Value Managed", f"${total_val:,.2f}")
+        m3.metric(
+            "Total Line Items", int(orders_df["total_items"].sum())
+        )
+
         st.markdown("---")
-        
-        # Reports Row
-        st.markdown("### 📊 Executive Summary Reports")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Consignments", len(df))
-        m2.metric("In Progress Status", len(df[df['global_status'] == 'In Progress']))
-        
-        total_val = pd.to_numeric(df['total_value'], errors='coerce').sum()
-        total_saved = pd.to_numeric(df['amount_saved'], errors='coerce').sum()
-        m3.metric("Total Value Managed ($)", f"${total_val:,.2f}")
-        m4.metric("Total Shipping Cost Saved ($)", f"${total_saved:,.2f}")
-        
-        # Multi-filter block
-        st.markdown("#### 🔍 Filter Panel")
-        f_col1, f_col2, f_col3 = st.columns(3)
-        with f_col1:
-            filter_status = st.multiselect("Global Process Status", options=df['global_status'].unique())
-        with f_col2:
-            filter_supplier = st.multiselect("Filter by Supplier", options=df['supplier'].unique())
-        with f_col3:
-            filter_line = st.multiselect("Filter by Shipping Line", options=df['shipping_line'].unique())
-            
-        if filter_status: df = df[df['global_status'].isin(filter_status)]
-        if filter_supplier: df = df[df['supplier'].isin(filter_supplier)]
-        if filter_line: df = df[df['shipping_line'].isin(filter_line)]
-            
-        search_q = st.text_input("Global Keyword Search")
-        if search_q:
-            df = df[df.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)]
-            
-        st.markdown("#### 📦 Filtered Master Table View")
-        st.dataframe(df, use_container_width=True)
-        
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Export Current View to CSV Report", csv, "filtered_shipment_report.csv", "text/csv")
+        st.dataframe(orders_df, use_container_width=True)
 
-# --- MANUAL ENTRY FORM ---
-elif choice == "Add Shipment":
-    if st.session_state['role'] == 'Viewer':
-        st.error("Action denied.")
+        selected_po = st.selectbox(
+            "Select PO to View Line Items Detail", orders_df["po_number"].tolist()
+        )
+        if selected_po:
+            items_df = pd.read_sql_query(
+                """
+                SELECT oi.item_id, oi.model_product, pc.description, pc.category, 
+                       oi.ordered_qty, oi.supplier_unit_price, 
+                       (oi.ordered_qty * oi.supplier_unit_price) as line_total
+                FROM order_items oi
+                JOIN master_orders mo ON oi.order_id = mo.order_id
+                LEFT JOIN product_catalog pc ON oi.model_product = pc.model_code
+                WHERE mo.po_number = %s
+            """,
+                conn,
+                params=(selected_po,),
+            )
+            st.write(f"**Line Items for PO:** `{selected_po}`")
+            st.dataframe(items_df, use_container_width=True)
+
+    conn.close()
+
+# --- CREATE MASTER ORDER FORM ---
+elif choice == "Create Master Order":
+    if st.session_state["role"] == "Viewer":
+        st.error("Action denied: Viewer role cannot create orders.")
     else:
-        st.subheader("📝 Enter New Shipment Case Details")
-        global_statuses = get_master_list('global_status')
-        logistics_statuses = get_master_list('logistics_status')
-        suppliers = get_master_list('supplier')
-        brands = get_master_list('brand')
-        forwarders = get_master_list('forwarder')
-        lines = get_master_list('shipping_line')
-        consignees = get_master_list('consignee')
-        offshore_cos = get_master_list('offshore_company')
-        currencies = get_master_list('currency')
-        
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["1. Core Order Info", "2. Shipping & Logistics", "3. Document Custody & DHL", "4. Financial Matrix", "5. Orion ERP Sync"])
-        
-        with tab1:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                g_status = st.selectbox("Global Process Status", global_statuses)
-                month = st.text_input("Month")
-                supplier = st.selectbox("Supplier", suppliers)
-                brand = st.selectbox("Brand", brands)
-            with col2:
-                cat = st.text_input("Category (CAT)")
-                approval = st.text_input("Approval Status")
-                model = st.text_input("Model")
-                item_type = st.text_input("Type")
-            with col3:
-                consignee = st.selectbox("Consignee", consignees)
-                offshore_co = st.selectbox("Primary Offshore Company Involved", offshore_cos)
-                ordered_qty = st.number_input("Ordered Qty", value=0.0)
-                unit_price = st.number_input("Unit Price", value=0.0)
-                total_value = st.number_input("Total Value", value=0.0)
-                currency = st.selectbox("Currency", currencies)
+        st.subheader("📝 Create New Master Order")
 
-        with tab2:
-            col1, col2 = st.columns(2)
-            with col1:
-                log_status = st.selectbox("Logistics Status (Shipped/Pending)", logistics_statuses)
-                incoterm = st.text_input("Incoterm")
-                origin = st.text_input("Origin")
-                forwarder = st.selectbox("Forwarder Name", forwarders)
-                shipping_line = st.selectbox("Shipping Line", lines)
-                bl_no = st.text_input("B/L No.")
-                bol_date = st.text_input("BOL Date")
-            with col2:
-                etd = st.text_input("ETD")
-                eta = st.text_input("ETA")
-                cntr_20 = st.text_input("20 FT CNTR")
-                cntr_40 = st.text_input("40 FT CNTR")
-                bu_est_ship = st.number_input("BU Estimated Shipping Cost", value=0.0)
-                act_ship_usd = st.number_input("Actual Shipping Cost USD", value=0.0)
-                act_ship_aed = st.number_input("Actual Shipping Cost AED", value=0.0)
-                amount_saved = bu_est_ship - act_ship_usd
+        bu_options = get_ref_list("BU")
+        supplier_options = get_ref_list("Supplier")
+        currency_options = get_ref_list("Currency")
+        incoterm_options = get_ref_list("Incoterm")
+        approval_options = get_ref_list("Approval")
 
-        with tab3:
-            col1, col2 = st.columns(2)
-            with col1:
-                draft_recv = st.text_input("Draft Doc Recv Date")
-                final_draft = st.text_input("Final Draft Documents")
-                orig_recv = st.text_input("Original Documents Rcvd Date")
-                dhl_supp_office = st.text_input("DHL: Supplier to Office Tracking No.")
-            with col2:
-                docs_sent_bank_dt = st.text_input("Original Docs Sent to Bank Date")
-                dhl_office_adib = st.text_input("DHL: Office to ADIB Tracking No.")
-                dhl_dt_adib_ucb = st.text_input("DHL Date: ADIB to UCB")
-                dhl_adib_ucb = st.text_input("DHL: ADIB to UCB Tracking No.")
+        # Get Catalog Products for dropdown/autocomplete selection
+        conn = get_db_connection()
+        catalog_df = pd.read_sql_query(
+            "SELECT model_code, description, category, standard_unit_price FROM product_catalog",
+            conn,
+        )
+        conn.close()
 
-        with tab4:
-            col1, col2 = st.columns(2)
-            with col1:
-                supp_pi_no = st.text_input("Supplier PI No")
-                supp_pi_date = st.text_input("Supplier PI Date")
-                supp_pay_terms = st.text_input("Supplier Payment Terms")
-                due_date = st.text_input("Due Date")
-                due_amount = st.number_input("Due Amount", value=0.0)
-            with col2:
-                adv_payment = st.number_input("Advance Payment", value=0.0)
-                rem_payment = st.number_input("Remaining Payment", value=0.0)
-                techuip_inv = st.text_input("TECHUIP Invoice No.")
-                techuip_val = st.number_input("TECHUIP Invoice Value $", value=0.0)
+        catalog_map = catalog_df.set_index("model_code").to_dict("index")
+        catalog_codes = catalog_df["model_code"].tolist()
 
-        with tab5:
-            st.markdown("##### 🏢 Orion Routing Invoices")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Section A: Offshore Company 1**")
-                orion_inv1 = st.text_input("Orion Invoice No (Offshore 1)")
-                orion_pr = st.text_input("Orion PR No")
-                orion_po = st.text_input("Orion PO No")
-                orion_sa = st.text_input("Orion SA")
-                orion_grn = st.text_input("Orion GRN")
-            with col2:
-                st.markdown("**Section B: Offshore Company 2**")
-                orion_inv2 = st.text_input("Orion Invoice No (Offshore 2)")
-                inspection_no = st.text_input("Inspection No.")
-                grn_no = st.text_input("GRN No.")
-                author = st.text_input("Author", value=st.session_state['username'])
-                remarks_gen = st.text_area("General Remarks")
+        # 1. Header Section
+        st.markdown("### 1. Header Details")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            po_number = st.text_input("PO Number *")
+            bu_id = st.selectbox("Business Unit", bu_options if bu_options else ["Default BU"])
+        with c2:
+            supplier_id = st.selectbox("Supplier", supplier_options if supplier_options else ["Default Supplier"])
+            currency = st.selectbox("Currency", currency_options if currency_options else ["USD", "EUR"])
+        with c3:
+            incoterm = st.selectbox("Incoterm", incoterm_options if incoterm_options else ["FOB", "CIF"])
+            approval_type = st.selectbox("Approval Type", approval_options if approval_options else ["Standard"])
 
-        if st.button("💾 Save Shipment Entry"):
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute('''INSERT INTO shipments (
-                            global_status, month, supplier, brand, cat, approval, model, type, consignee, offshore_company,
-                            ordered_qty, unit_price, total_value, currency, logistics_status, incoterm, origin, forwarder_name,
-                            shipping_line, b_l_no, bol_date, etd, eta, cntr_20ft, cntr_40ft, bu_estimated_shipping_cost,
-                            actual_shipping_cost_usd, actual_shipping_cost_aed, amount_saved, draft_doc_recv_date, final_draft_documents,
-                            original_documents_rcvd_date, dhl_supplier_to_office, original_docs_sent_to_bank_date, dhl_office_to_adib,
-                            dhl_date_adib_to_ucb, dhl_adib_to_ucb, supplier_pi_no, supplier_pi_date, supplier_payment_terms,
-                            due_date, due_amount, advance_payment, remaining_payment, techuip_invoice_no, techuip_invoice_value,
-                            orion_pr_no, orion_po_no, orion_sa, orion_grn, orion_invoice_offshore1, orion_invoice_offshore2, 
-                            inspection_no, grn_no, author, remarks_general
-                         ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
-                      (g_status, month, supplier, brand, cat, approval, model, item_type, consignee, offshore_co,
-                       ordered_qty, unit_price, total_value, currency, log_status, incoterm, origin, forwarder,
-                       shipping_line, bl_no, bol_date, etd, eta, cntr_20, cntr_40, bu_est_ship,
-                       act_ship_usd, act_ship_aed, amount_saved, draft_recv, final_draft,
-                       orig_recv, dhl_supp_office, docs_sent_bank_dt, dhl_office_adib,
-                       dhl_dt_adib_ucb, dhl_adib_ucb, supp_pi_no, supp_pi_date, supp_pay_terms,
-                       due_date, due_amount, adv_payment, rem_payment, techuip_inv, techuip_val,
-                       orion_pr, orion_po, orion_sa, orion_grn, orion_inv1, orion_inv2, 
-                       inspection_no, grn_no, author, remarks_gen))
-            conn.commit()
-            conn.close()
-            st.success("Shipment added securely to Cloud Storage!")
+        st.markdown("---")
+        st.markdown("### 2. Order Line Items")
 
-# --- BULK UPLOAD ---
-elif choice == "Bulk Upload (CSV/Excel)":
-    if st.session_state['role'] == 'Viewer':
-        st.error("Permission denied.")
-    else:
-        st.subheader("📥 Mass Excel / CSV Data Upload")
-        uploaded_file = st.file_uploader("Choose a file", type=['csv', 'xlsx'])
-        if uploaded_file is not None:
-            try:
-                uploaded_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-                st.write("Preview of Uploaded Data:")
-                st.dataframe(uploaded_df.head())
-                
-                if st.button("Confirm and Append to Cloud Storage"):
+        # Interactive Table Editor
+        default_items = pd.DataFrame(
+            [
+                {
+                    "Model Product Code": catalog_codes[0] if catalog_codes else "",
+                    "Ordered Qty": 1.0,
+                    "Unit Price ($)": float(
+                        catalog_map[catalog_codes[0]]["standard_unit_price"]
+                    )
+                    if catalog_codes
+                    else 0.0,
+                }
+            ]
+        )
+
+        edited_df = st.data_editor(
+            default_items,
+            num_rows="dynamic",
+            column_config={
+                "Model Product Code": st.column_config.SelectboxColumn(
+                    "Model Product Code",
+                    options=catalog_codes,
+                    required=True,
+                ),
+                "Ordered Qty": st.column_config.NumberColumn(
+                    "Ordered Qty", min_value=1, default=1
+                ),
+                "Unit Price ($)": st.column_config.NumberColumn(
+                    "Unit Price ($)", min_value=0.0, format="$%.2f"
+                ),
+            },
+            use_container_width=True,
+        )
+
+        if st.button("💾 Submit Master Order", type="primary"):
+            if not po_number:
+                st.error("PO Number is required!")
+            else:
+                try:
                     conn = get_db_connection()
-                    cursor = conn.cursor()
-                    
-                    # Columns configuration matching cloud schema
-                    columns = [c for c in uploaded_df.columns if c in [
-                        'global_status', 'month', 'supplier', 'brand', 'cat', 'approval', 'model', 'type', 'consignee', 'offshore_company',
-                        'ordered_qty', 'unit_price', 'total_value', 'currency', 'logistics_status', 'orion_invoice_offshore1', 'orion_invoice_offshore2'
-                    ]]
-                    
-                    for _, row in uploaded_df[columns].iterrows():
-                        row_vals = [None if pd.isna(val) else val for val in row.values]
-                        placeholders = ", ".join(["%s"] * len(columns))
-                        sql = f"INSERT INTO shipments ({', '.join(columns)}) VALUES ({placeholders})"
-                        cursor.execute(sql, row_vals)
-                        
+                    cur = conn.cursor()
+
+                    # Insert Header
+                    cur.execute(
+                        """
+                        INSERT INTO master_orders (po_number, bu_id, supplier_id, currency, incoterm, approval_type)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        RETURNING order_id;
+                    """,
+                        (po_number, bu_id, supplier_id, currency, incoterm, approval_type),
+                    )
+                    order_id = cur.fetchone()[0]
+
+                    # Insert Items
+                    for _, row in edited_df.iterrows():
+                        model_code = row["Model Product Code"]
+                        qty = row["Ordered Qty"]
+                        price = row["Unit Price ($)"]
+                        if model_code:
+                            cur.execute(
+                                """
+                                INSERT INTO order_items (order_id, model_product, ordered_qty, supplier_unit_price)
+                                VALUES (%s, %s, %s, %s);
+                            """,
+                                (order_id, model_code, qty, price),
+                            )
+
                     conn.commit()
                     conn.close()
-                    st.success("Successfully processed and saved records to database cloud!")
-            except Exception as e:
-                st.error(f"Error parsing dataset parsing structure: {e}")
+                    st.success(
+                        f"Master Order **{po_number}** (ID: {order_id}) created successfully!"
+                    )
+                except Exception as ex:
+                    st.error(f"Failed to save order: {ex}")
 
-# --- SYSTEM SETTINGS PANEL ---
-elif choice == "Settings & Master Lists":
-    st.subheader("⚙️ Control Dashboard Master Lists")
-    
-    # SYSTEM RESET TRIGGER (FOR CLEAN REBOOTS FROM SCRATCH)
-    st.markdown("### ⚠️ Danger Zone")
-    st.markdown("Need to change headers, start an entirely new layout, or clear out experimental data? Use this button to clear the tables.")
-    if st.button("💣 Nuke & Reset Database Structure"):
-        try:
-            init_db(force_drop=True)
-            st.success("Cloud database successfully wiped clean! The app schema has been rebuilt from scratch.")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Reset failed: {e}")
-            
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        list_choice = st.selectbox("Select List to Manage", [
-            ('supplier', 'Suppliers List'), ('brand', 'Brands List'), ('forwarder', 'Forwarders List'),
-            ('shipping_line', 'Shipping Lines List'), ('consignee', 'Consignees List'),
-            ('offshore_company', 'Internal Offshore Companies'), ('global_status', 'Global System Process Statuses'),
-            ('logistics_status', 'Logistics Step Statuses')
-        ], format_func=lambda x: x[1])
-        new_item = st.text_input(f"Add New Entry to {list_choice[1]}")
-        if st.button("Add to Dropdowns"):
-            add_master_item(list_choice[0], new_item)
-            st.success(f"Added '{new_item}' successfully!")
-    with col2:
-        st.write("Current configured values:")
-        st.write(get_master_list(list_choice[0])[1:])
+# --- SETTINGS & PRODUCT CATALOG ---
+elif choice == "Settings & Product Catalog":
+    st.subheader("⚙️ Control Settings & Product Catalog")
+
+    tab1, tab2 = st.tabs(["Product Catalog", "Reference Lists"])
+
+    with tab1:
+        st.markdown("#### 📦 Product Catalog Management")
+        conn = get_db_connection()
+        p_df = pd.read_sql_query("SELECT * FROM product_catalog", conn)
+        conn.close()
+        st.dataframe(p_df, use_container_width=True)
+
+        st.markdown("##### Add New Product to Catalog")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            m_code = st.text_input("Model Code")
+        with col2:
+            m_desc = st.text_input("Description")
+        with col3:
+            m_cat = st.text_input("Category")
+        with col4:
+            m_price = st.number_input("Standard Unit Price", min_value=0.0)
+
+        if st.button("Add Product"):
+            if m_code:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO product_catalog (model_code, description, category, standard_unit_price)
+                        VALUES (%s, %s, %s, %s)
+                    """,
+                        (m_code, m_desc, m_cat, m_price),
+                    )
+                    conn.commit()
+                    st.success(f"Product '{m_code}' added successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error adding product: {e}")
+                finally:
+                    conn.close()
+
+    with tab2:
+        col1, col2 = st.columns(2)
+        with col1:
+            cat_choice = st.selectbox(
+                "Select Category", ["BU", "Supplier", "Currency", "Incoterm", "Approval"]
+            )
+            new_val = st.text_input(f"Add New Entry to {cat_choice}")
+            if st.button("Add Reference Item"):
+                add_ref_item(cat_choice, new_val)
+                st.success(f"Added '{new_val}' to {cat_choice}!")
+                st.rerun()
+        with col2:
+            st.write(f"Current values for **{cat_choice}**:")
+            st.write(get_ref_list(cat_choice))
