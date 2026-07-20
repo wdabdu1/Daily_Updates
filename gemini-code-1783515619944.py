@@ -76,36 +76,27 @@ def init_db(force_drop=False):
                     ordered_qty NUMERIC(15, 2), 
                     supplier_unit_price NUMERIC(15, 2))""")
 
-    # 6. Task Definitions (Standard clearance workflow steps)
-    c.execute("""CREATE TABLE IF NOT EXISTS task_definitions (
+    # 6. Task Definitions (Re-created cleanly to guarantee column alignment)
+    c.execute("DROP TABLE IF EXISTS task_definitions CASCADE;")
+    c.execute("""CREATE TABLE task_definitions (
                     task_def_id SERIAL PRIMARY KEY,
                     step_order INT,
                     task_name VARCHAR(100),
                     department VARCHAR(50),
                     sla_days INT)""")
 
-    # Ensure missing columns exist if task_definitions already existed
-    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS step_order INT;")
-    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS task_name VARCHAR(100);")
-    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS department VARCHAR(50);")
-    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS sla_days INT;")
-    c.execute("DELETE FROM task_definitions WHERE step_order IS NULL;")
-
-    # Seed Task Definitions if empty
-    c.execute("SELECT COUNT(*) FROM task_definitions")
-    if c.fetchone()[0] == 0:
-        default_tasks = [
-            (1, "ACD Approval", "Compliance", 2),
-            (2, "SSMO License & Exemption", "Regulatory", 3),
-            (3, "Customs Duty Assessment", "Customs", 2),
-            (4, "Port Release & Payment", "Logistics", 2),
-            (5, "Final Warehouse Delivery", "Operations", 1),
-        ]
-        for t in default_tasks:
-            c.execute(
-                "INSERT INTO task_definitions (step_order, task_name, department, sla_days) VALUES (%s, %s, %s, %s)",
-                t,
-            )
+    default_tasks = [
+        (1, "ACD Approval", "Compliance", 2),
+        (2, "SSMO License & Exemption", "Regulatory", 3),
+        (3, "Customs Duty Assessment", "Customs", 2),
+        (4, "Port Release & Payment", "Logistics", 2),
+        (5, "Final Warehouse Delivery", "Operations", 1),
+    ]
+    for t in default_tasks:
+        c.execute(
+            "INSERT INTO task_definitions (step_order, task_name, department, sla_days) VALUES (%s, %s, %s, %s)",
+            t,
+        )
 
     # 7. Shipments Table
     c.execute("""CREATE TABLE IF NOT EXISTS shipments (
