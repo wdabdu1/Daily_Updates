@@ -35,7 +35,6 @@ def init_db(force_drop=False):
                     role VARCHAR(50),
                     scope_bu_id VARCHAR(20))""")
 
-    # Ensure missing password column is added to existing users table
     c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;")
 
     # 2. Master Dropdowns / Ref Lists
@@ -43,8 +42,13 @@ def init_db(force_drop=False):
                     id SERIAL PRIMARY KEY,
                     category VARCHAR(50), 
                     item_name VARCHAR(100),
-                    is_active BOOLEAN DEFAULT TRUE,
-                    UNIQUE(category, item_name))""")
+                    is_active BOOLEAN DEFAULT TRUE)""")
+
+    # Cleanup any existing duplicate entries in ref_lists
+    c.execute("""
+        DELETE FROM ref_lists a USING ref_lists b 
+        WHERE a.id < b.id AND a.category = b.category AND a.item_name = b.item_name;
+    """)
 
     # 3. Product Catalog
     c.execute("""CREATE TABLE IF NOT EXISTS product_catalog (
@@ -82,36 +86,40 @@ def init_db(force_drop=False):
             (hashed,),
         )
 
-    # Seed sample product catalog items
-    seed_catalog = [
-        ("LAP-100", "ThinkPad T14", "Electronics", 1200.00),
-        ("LAP-200", "MacBook Pro", "Electronics", 2000.00),
-        ("MOT-550", "Heavy Duty Motor", "Machinery", 4500.00),
-    ]
-    for p in seed_catalog:
-        c.execute(
-            "INSERT INTO product_catalog (model_code, description, category, standard_unit_price) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            p,
-        )
+    # Seed reference dropdowns ONLY IF ref_lists table is completely empty
+    c.execute("SELECT COUNT(*) FROM ref_lists")
+    if c.fetchone()[0] == 0:
+        seed_ref = [
+            ("BU", "Consumer Electronics"),
+            ("BU", "Heavy Machinery"),
+            ("Supplier", "Global Tech Offshore"),
+            ("Supplier", "Industrial Parts LLC"),
+            ("Currency", "USD"),
+            ("Currency", "EUR"),
+            ("Incoterm", "FOB"),
+            ("Incoterm", "CIF"),
+            ("Approval", "Standard"),
+            ("Approval", "Director"),
+        ]
+        for r in seed_ref:
+            c.execute(
+                "INSERT INTO ref_lists (category, item_name) VALUES (%s, %s)",
+                r,
+            )
 
-    # Seed initial dropdown reference items
-    seed_ref = [
-        ("BU", "Consumer Electronics"),
-        ("BU", "Heavy Machinery"),
-        ("Supplier", "Global Tech Offshore"),
-        ("Supplier", "Industrial Parts LLC"),
-        ("Currency", "USD"),
-        ("Currency", "EUR"),
-        ("Incoterm", "FOB"),
-        ("Incoterm", "CIF"),
-        ("Approval", "Standard"),
-        ("Approval", "Director"),
-    ]
-    for r in seed_ref:
-        c.execute(
-            "INSERT INTO ref_lists (category, item_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-            r,
-        )
+    # Seed catalog items ONLY IF product_catalog table is empty
+    c.execute("SELECT COUNT(*) FROM product_catalog")
+    if c.fetchone()[0] == 0:
+        seed_catalog = [
+            ("LAP-100", "ThinkPad T14", "Electronics", 1200.00),
+            ("LAP-200", "MacBook Pro", "Electronics", 2000.00),
+            ("MOT-550", "Heavy Duty Motor", "Machinery", 4500.00),
+        ]
+        for p in seed_catalog:
+            c.execute(
+                "INSERT INTO product_catalog (model_code, description, category, standard_unit_price) VALUES (%s, %s, %s, %s)",
+                p,
+            )
 
     conn.commit()
     conn.close()
@@ -128,7 +136,7 @@ except Exception as e:
 def get_ref_list(category):
     conn = get_db_connection()
     df = pd.read_sql_query(
-        "SELECT item_name FROM ref_lists WHERE category=%s AND is_active=TRUE",
+        "SELECT DISTINCT item_name FROM ref_lists WHERE category=%s AND is_active=TRUE ORDER BY item_name",
         conn,
         params=(category,),
     )
@@ -142,7 +150,7 @@ def add_ref_item(category, val):
         c = conn.cursor()
         try:
             c.execute(
-                "INSERT INTO ref_lists (category, item_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                "INSERT INTO ref_lists (category, item_name) VALUES (%s, %s)",
                 (category, val),
             )
             conn.commit()
@@ -260,10 +268,10 @@ elif choice == "Create Master Order":
         incoterm_options = get_ref_list("Incoterm")
         approval_options = get_ref_list("Approval")
 
-        # Get Catalog Products for dropdown selection
+        # Get Catalog Products (distinct)
         conn = get_db_connection()
         catalog_df = pd.read_sql_query(
-            "SELECT model_code, description, category, standard_unit_price FROM product_catalog",
+            "SELECT DISTINCT model_code, description, category, standard_unit_price FROM product_catalog ORDER BY model_code",
             conn,
         )
         conn.close()
@@ -297,7 +305,6 @@ elif choice == "Create Master Order":
         st.markdown("---")
         st.markdown("### 2. Order Line Items")
 
-        # Interactive Table Editor
         default_items = pd.DataFrame(
             [
                 {
@@ -381,7 +388,7 @@ elif choice == "Settings & Product Catalog":
     with tab1:
         st.markdown("#### 📦 Product Catalog Management")
         conn = get_db_connection()
-        p_df = pd.read_sql_query("SELECT * FROM product_catalog", conn)
+        p_df = pd.read_sql_query("SELECT DISTINCT * FROM product_catalog", conn)
         conn.close()
         st.dataframe(p_df, use_container_width=True)
 
