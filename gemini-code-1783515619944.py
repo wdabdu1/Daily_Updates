@@ -29,9 +29,14 @@ def init_db(force_drop=False):
 
     # 1. Users Table
     c.execute("""CREATE TABLE IF NOT EXISTS users (
-                    username TEXT PRIMARY KEY, 
+                    user_id SERIAL PRIMARY KEY,
+                    username VARCHAR(50) UNIQUE, 
                     password TEXT, 
-                    role TEXT)""")
+                    role VARCHAR(50),
+                    scope_bu_id VARCHAR(20))""")
+
+    # Ensure missing password column is added to existing users table
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;")
 
     # 2. Master Dropdowns / Ref Lists
     c.execute("""CREATE TABLE IF NOT EXISTS ref_lists (
@@ -68,42 +73,45 @@ def init_db(force_drop=False):
                     ordered_qty NUMERIC(15, 2), 
                     supplier_unit_price NUMERIC(15, 2))""")
 
-    # Seed Admin & Sample Data if missing
+    # Seed Admin user if missing
     c.execute("SELECT * FROM users WHERE username='admin'")
     if not c.fetchone():
         hashed = hashlib.sha256("admin123".encode()).hexdigest()
-        c.execute("INSERT INTO users VALUES ('admin', %s, 'Admin')", (hashed,))
+        c.execute(
+            "INSERT INTO users (username, password, role) VALUES ('admin', %s, 'Admin')",
+            (hashed,),
+        )
 
-        # Seed sample product catalog items
-        seed_catalog = [
-            ("LAP-100", "ThinkPad T14", "Electronics", 1200.00),
-            ("LAP-200", "MacBook Pro", "Electronics", 2000.00),
-            ("MOT-550", "Heavy Duty Motor", "Machinery", 4500.00),
-        ]
-        for p in seed_catalog:
-            c.execute(
-                "INSERT INTO product_catalog (model_code, description, category, standard_unit_price) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                p,
-            )
+    # Seed sample product catalog items
+    seed_catalog = [
+        ("LAP-100", "ThinkPad T14", "Electronics", 1200.00),
+        ("LAP-200", "MacBook Pro", "Electronics", 2000.00),
+        ("MOT-550", "Heavy Duty Motor", "Machinery", 4500.00),
+    ]
+    for p in seed_catalog:
+        c.execute(
+            "INSERT INTO product_catalog (model_code, description, category, standard_unit_price) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            p,
+        )
 
-        # Seed initial dropdown reference items
-        seed_ref = [
-            ("BU", "Consumer Electronics"),
-            ("BU", "Heavy Machinery"),
-            ("Supplier", "Global Tech Offshore"),
-            ("Supplier", "Industrial Parts LLC"),
-            ("Currency", "USD"),
-            ("Currency", "EUR"),
-            ("Incoterm", "FOB"),
-            ("Incoterm", "CIF"),
-            ("Approval", "Standard"),
-            ("Approval", "Director"),
-        ]
-        for r in seed_ref:
-            c.execute(
-                "INSERT INTO ref_lists (category, item_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                r,
-            )
+    # Seed initial dropdown reference items
+    seed_ref = [
+        ("BU", "Consumer Electronics"),
+        ("BU", "Heavy Machinery"),
+        ("Supplier", "Global Tech Offshore"),
+        ("Supplier", "Industrial Parts LLC"),
+        ("Currency", "USD"),
+        ("Currency", "EUR"),
+        ("Incoterm", "FOB"),
+        ("Incoterm", "CIF"),
+        ("Approval", "Standard"),
+        ("Approval", "Director"),
+    ]
+    for r in seed_ref:
+        c.execute(
+            "INSERT INTO ref_lists (category, item_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            r,
+        )
 
     conn.commit()
     conn.close()
@@ -212,9 +220,7 @@ if choice == "Master Orders Dashboard":
         m1.metric("Total Master Orders", len(orders_df))
         total_val = orders_df["total_order_value"].sum()
         m2.metric("Total Value Managed", f"${total_val:,.2f}")
-        m3.metric(
-            "Total Line Items", int(orders_df["total_items"].sum())
-        )
+        m3.metric("Total Line Items", int(orders_df["total_items"].sum()))
 
         st.markdown("---")
         st.dataframe(orders_df, use_container_width=True)
@@ -254,7 +260,7 @@ elif choice == "Create Master Order":
         incoterm_options = get_ref_list("Incoterm")
         approval_options = get_ref_list("Approval")
 
-        # Get Catalog Products for dropdown/autocomplete selection
+        # Get Catalog Products for dropdown selection
         conn = get_db_connection()
         catalog_df = pd.read_sql_query(
             "SELECT model_code, description, category, standard_unit_price FROM product_catalog",
@@ -270,13 +276,23 @@ elif choice == "Create Master Order":
         c1, c2, c3 = st.columns(3)
         with c1:
             po_number = st.text_input("PO Number *")
-            bu_id = st.selectbox("Business Unit", bu_options if bu_options else ["Default BU"])
+            bu_id = st.selectbox(
+                "Business Unit", bu_options if bu_options else ["Default BU"]
+            )
         with c2:
-            supplier_id = st.selectbox("Supplier", supplier_options if supplier_options else ["Default Supplier"])
-            currency = st.selectbox("Currency", currency_options if currency_options else ["USD", "EUR"])
+            supplier_id = st.selectbox(
+                "Supplier", supplier_options if supplier_options else ["Default Supplier"]
+            )
+            currency = st.selectbox(
+                "Currency", currency_options if currency_options else ["USD", "EUR"]
+            )
         with c3:
-            incoterm = st.selectbox("Incoterm", incoterm_options if incoterm_options else ["FOB", "CIF"])
-            approval_type = st.selectbox("Approval Type", approval_options if approval_options else ["Standard"])
+            incoterm = st.selectbox(
+                "Incoterm", incoterm_options if incoterm_options else ["FOB", "CIF"]
+            )
+            approval_type = st.selectbox(
+                "Approval Type", approval_options if approval_options else ["Standard"]
+            )
 
         st.markdown("---")
         st.markdown("### 2. Order Line Items")
