@@ -79,10 +79,17 @@ def init_db(force_drop=False):
     # 6. Task Definitions (Standard clearance workflow steps)
     c.execute("""CREATE TABLE IF NOT EXISTS task_definitions (
                     task_def_id SERIAL PRIMARY KEY,
-                    step_order INT UNIQUE,
+                    step_order INT,
                     task_name VARCHAR(100),
                     department VARCHAR(50),
                     sla_days INT)""")
+
+    # Ensure missing columns exist if task_definitions already existed
+    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS step_order INT;")
+    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS task_name VARCHAR(100);")
+    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS department VARCHAR(50);")
+    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS sla_days INT;")
+    c.execute("DELETE FROM task_definitions WHERE step_order IS NULL;")
 
     # Seed Task Definitions if empty
     c.execute("SELECT COUNT(*) FROM task_definitions")
@@ -455,7 +462,6 @@ elif choice == "Shipments & Task Manager":
             selected_po_ref = st.selectbox("Select Master Order (PO #)", list(po_map.keys()))
             selected_order_id = po_map[selected_po_ref]
 
-            # Fetch line items with calculated remaining quantity
             conn = get_db_connection()
             items_df = pd.read_sql_query("""
                 SELECT oi.item_id, oi.model_product, oi.ordered_qty,
@@ -478,7 +484,6 @@ elif choice == "Shipments & Task Manager":
 
             st.markdown("##### Allocate Quantities for this Shipment")
             
-            # Prepare interactive allocation table
             allocation_data = []
             for _, r in items_df.iterrows():
                 allocation_data.append({
@@ -487,7 +492,7 @@ elif choice == "Shipments & Task Manager":
                     "Total Ordered": float(r["ordered_qty"]),
                     "Already Shipped": float(r["total_shipped"]),
                     "Remaining Balance": float(r["remaining_qty"]),
-                    "Ship Quantity": float(r["remaining_qty"])  # default to remaining
+                    "Ship Quantity": float(r["remaining_qty"])
                 })
 
             alloc_df = pd.DataFrame(allocation_data)
@@ -508,7 +513,6 @@ elif choice == "Shipments & Task Manager":
                         conn = get_db_connection()
                         cur = conn.cursor()
 
-                        # Insert shipment header
                         cur.execute("""
                             INSERT INTO shipments (shipment_ref, order_id, bl_awb, eta, status)
                             VALUES (%s, %s, %s, %s, 'In Clearance')
@@ -516,7 +520,6 @@ elif choice == "Shipments & Task Manager":
                         """, (shp_ref, selected_order_id, bl_awb, eta_date))
                         shipment_id = cur.fetchone()[0]
 
-                        # Insert shipment contents
                         for _, row in edited_alloc.iterrows():
                             ship_qty = row["Ship Quantity"]
                             item_id = int(row["Item ID"])
@@ -526,13 +529,11 @@ elif choice == "Shipments & Task Manager":
                                     VALUES (%s, %s, %s);
                                 """, (shipment_id, item_id, ship_qty))
 
-                        # Auto-generate task pipeline from task_definitions
                         cur.execute("SELECT step_order, task_name, department FROM task_definitions ORDER BY step_order ASC")
                         defs = cur.fetchall()
 
                         for idx, d in enumerate(defs):
                             step_ord, t_name, dept = d
-                            # First step is 'In Progress', rest are 'Pending' (locked)
                             initial_status = "In Progress" if idx == 0 else "Pending"
                             cur.execute("""
                                 INSERT INTO shipment_tasks (shipment_id, step_order, task_name, department, status)
@@ -567,7 +568,6 @@ elif choice == "Shipments & Task Manager":
 
             st.info(f"**PO:** `{shp_row['po_number']}` | **BL/AWB:** `{shp_row['bl_awb']}` | **ETA:** `{shp_row['eta']}` | **Status:** `{shp_row['status']}`")
 
-            # Fetch tasks for this shipment
             conn = get_db_connection()
             tasks_df = pd.read_sql_query("""
                 SELECT task_id, step_order, task_name, department, status, notes, completed_at
@@ -580,7 +580,6 @@ elif choice == "Shipments & Task Manager":
             st.markdown("---")
             st.markdown("### Step-by-Step Task Workflow")
 
-            # Blocking Logic: Task N can only be updated if Task N-1 is 'Completed'
             previous_completed = True
 
             for _, task in tasks_df.iterrows():
@@ -604,21 +603,18 @@ elif choice == "Shipments & Task Manager":
                             conn = get_db_connection()
                             cur = conn.cursor()
 
-                            # Complete current task
                             cur.execute("""
                                 UPDATE shipment_tasks 
                                 SET status = 'Completed', notes = %s, completed_at = CURRENT_TIMESTAMP
                                 WHERE task_id = %s;
                             """, (task_notes, t_id))
 
-                            # Unlock next step if exists
                             cur.execute("""
                                 UPDATE shipment_tasks
                                 SET status = 'In Progress'
                                 WHERE shipment_id = %s AND step_order = %s;
                             """, (shp_id, step + 1))
 
-                            # If last step, mark shipment as Delivered
                             cur.execute("SELECT COUNT(*) FROM shipment_tasks WHERE shipment_id = %s AND status != 'Completed'", (shp_id,))
                             remaining_tasks = cur.fetchone()[0]
                             if remaining_tasks == 0:
