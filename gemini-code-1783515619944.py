@@ -34,7 +34,6 @@ def init_db(force_drop=False):
                     password TEXT, 
                     role VARCHAR(50),
                     scope_bu_id VARCHAR(20))""")
-
     c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;")
 
     # 2. Master Dropdowns / Ref Lists
@@ -76,29 +75,34 @@ def init_db(force_drop=False):
                     ordered_qty NUMERIC(15, 2), 
                     supplier_unit_price NUMERIC(15, 2))""")
 
-    # 6. Task Definitions (Re-created cleanly to guarantee column alignment)
-    c.execute("DROP TABLE IF EXISTS task_definitions CASCADE;")
-    c.execute("""CREATE TABLE task_definitions (
+    # 6. Task Definitions
+    c.execute("""CREATE TABLE IF NOT EXISTS task_definitions (
                     task_def_id SERIAL PRIMARY KEY,
                     step_order INT,
                     task_name VARCHAR(100),
                     department VARCHAR(50),
                     sla_days INT)""")
+    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS step_order INT;")
+    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS task_name VARCHAR(100);")
+    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS department VARCHAR(50);")
+    c.execute("ALTER TABLE task_definitions ADD COLUMN IF NOT EXISTS sla_days INT;")
 
-    default_tasks = [
-        (1, "ACD Approval", "Compliance", 2),
-        (2, "SSMO License & Exemption", "Regulatory", 3),
-        (3, "Customs Duty Assessment", "Customs", 2),
-        (4, "Port Release & Payment", "Logistics", 2),
-        (5, "Final Warehouse Delivery", "Operations", 1),
-    ]
-    for t in default_tasks:
-        c.execute(
-            "INSERT INTO task_definitions (step_order, task_name, department, sla_days) VALUES (%s, %s, %s, %s)",
-            t,
-        )
+    c.execute("SELECT COUNT(*) FROM task_definitions")
+    if c.fetchone()[0] == 0:
+        default_tasks = [
+            (1, "ACD Approval", "Compliance", 2),
+            (2, "SSMO License & Exemption", "Regulatory", 3),
+            (3, "Customs Duty Assessment", "Customs", 2),
+            (4, "Port Release & Payment", "Logistics", 2),
+            (5, "Final Warehouse Delivery", "Operations", 1),
+        ]
+        for t in default_tasks:
+            c.execute(
+                "INSERT INTO task_definitions (step_order, task_name, department, sla_days) VALUES (%s, %s, %s, %s)",
+                t,
+            )
 
-    # 7. Shipments Table
+    # 7. Shipments Table & Non-destructive Column Migrations
     c.execute("""CREATE TABLE IF NOT EXISTS shipments (
                     shipment_id SERIAL PRIMARY KEY,
                     shipment_ref VARCHAR(50) UNIQUE,
@@ -107,6 +111,10 @@ def init_db(force_drop=False):
                     eta DATE,
                     status VARCHAR(50) DEFAULT 'In Clearance',
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("ALTER TABLE shipments ADD COLUMN IF NOT EXISTS shipment_ref VARCHAR(50);")
+    c.execute("ALTER TABLE shipments ADD COLUMN IF NOT EXISTS bl_awb VARCHAR(100);")
+    c.execute("ALTER TABLE shipments ADD COLUMN IF NOT EXISTS eta DATE;")
+    c.execute("ALTER TABLE shipments ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'In Clearance';")
 
     # 8. Shipment Contents Table
     c.execute("""CREATE TABLE IF NOT EXISTS shipment_contents (
@@ -115,7 +123,7 @@ def init_db(force_drop=False):
                     item_id INTEGER REFERENCES order_items(item_id),
                     shipped_qty NUMERIC(15, 2))""")
 
-    # 9. Shipment Clearance Tasks Table
+    # 9. Shipment Clearance Tasks Table & Non-destructive Column Migrations
     c.execute("""CREATE TABLE IF NOT EXISTS shipment_tasks (
                     task_id SERIAL PRIMARY KEY,
                     shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
@@ -125,6 +133,12 @@ def init_db(force_drop=False):
                     status VARCHAR(50) DEFAULT 'Pending',
                     notes TEXT,
                     completed_at TIMESTAMP WITH TIME ZONE)""")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS step_order INT;")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS task_name VARCHAR(100);")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS department VARCHAR(50);")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'Pending';")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS notes TEXT;")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP WITH TIME ZONE;")
 
     # Seed Admin user if missing
     c.execute("SELECT * FROM users WHERE username='admin'")
