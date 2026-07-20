@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import os
 import pandas as pd
@@ -126,7 +126,17 @@ def init_db(force_drop=False):
                     department VARCHAR(50),
                     status VARCHAR(50) DEFAULT 'Pending',
                     notes TEXT,
+                    start_date DATE,
+                    completion_date DATE,
+                    ref_number VARCHAR(100),
+                    sla_days INT DEFAULT 2,
                     completed_at TIMESTAMP WITH TIME ZONE)""")
+
+    # Safe schema migration checks for existing tables
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS start_date DATE;")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS completion_date DATE;")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS ref_number VARCHAR(100);")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS sla_days INT DEFAULT 2;")
 
     # 10. Currency Rates Table
     c.execute("""CREATE TABLE IF NOT EXISTS currency_rates (
@@ -344,7 +354,6 @@ if choice == "Master Orders Dashboard":
     if orders_df.empty:
         st.info("No Master Orders found. Use 'Create Master Order' to add one.")
     else:
-        # Calculate Value ($) based on FX rates
         values_usd = []
         for _, row in orders_df.iterrows():
             curr = row["Currency"] if row["Currency"] in fx_rates else "USD"
@@ -362,7 +371,6 @@ if choice == "Master Orders Dashboard":
 
         st.markdown("---")
         
-        # Clean Table with '#' sequence column and correct column ordering
         view_orders_df = orders_df.copy()
         view_orders_df.insert(0, "#", range(1, 1 + len(view_orders_df)))
         
@@ -694,16 +702,17 @@ elif choice == "Shipments & Task Manager":
                                     VALUES (%s, %s, %s);
                                 """, (shipment_id, item_id, ship_qty))
 
-                        cur.execute("SELECT step_order, task_name, department FROM task_definitions ORDER BY step_order ASC")
+                        cur.execute("SELECT step_order, task_name, department, sla_days FROM task_definitions ORDER BY step_order ASC")
                         defs = cur.fetchall()
 
                         for idx, d in enumerate(defs):
-                            step_ord, t_name, dept = d
+                            step_ord, t_name, dept, sla_d = d
                             initial_status = "In Progress" if idx == 0 else "Pending"
+                            init_start = date.today() if idx == 0 else None
                             cur.execute("""
-                                INSERT INTO shipment_tasks (shipment_id, step_order, task_name, department, status)
-                                VALUES (%s, %s, %s, %s, %s);
-                            """, (shipment_id, step_ord, t_name, dept, initial_status))
+                                INSERT INTO shipment_tasks (shipment_id, step_order, task_name, department, status, sla_days, start_date)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s);
+                            """, (shipment_id, step_ord, t_name, dept, initial_status, sla_d, init_start))
 
                         conn.commit()
                         conn.close()
@@ -766,7 +775,7 @@ elif choice == "Shipments & Task Manager":
 
     # 2. Clearance Task Board Engine
     with s_tab2:
-        st.markdown("#### Sequential Clearance Pipeline")
+        st.markdown("#### Sequential Clearance Pipeline & SLA Duration Tracker")
         conn = get_db_connection()
         shipments_df = pd.read_sql_query("""
             SELECT s.shipment_id, s.shipment_ref, s.bl_awb, s.eta, s.status, mo.po_number
@@ -784,11 +793,12 @@ elif choice == "Shipments & Task Manager":
             shp_row = shipments_df[shipments_df["display_label"] == selected_label].iloc[0]
             shp_id = int(shp_row["shipment_id"])
 
-            st.info(f"**PO:** `{shp_row['po_number']}` | **BL/AWB:** `{shp_row['bl_awb']}` | **ETA:** `{shp_row['eta']}` | **Status:** `{shp_row['status']}`")
+            st.info(f"**PO:** `{shp_row['po_number']}` | **BL/AWB:** `{shp_row['bl_awb']}` | **ETA:** `{shp_row['eta']}` | **Overall Status:** `{shp_row['status']}`")
 
             conn = get_db_connection()
             tasks_df = pd.read_sql_query("""
-                SELECT task_id, step_order, task_name, department, status, notes, completed_at
+                SELECT task_id, step_order, task_name, department, status, notes, 
+                       start_date, completion_date, ref_number, sla_days
                 FROM shipment_tasks
                 WHERE shipment_id = %s
                 ORDER BY step_order ASC
@@ -796,7 +806,7 @@ elif choice == "Shipments & Task Manager":
             conn.close()
 
             st.markdown("---")
-            st.markdown("### Step-by-Step Task Workflow")
+            st.markdown("### Sequential Clearance Workflow")
 
             previous_completed = True
 
@@ -806,46 +816,171 @@ elif choice == "Shipments & Task Manager":
                 t_name = task["task_name"]
                 dept = task["department"]
                 status = task["status"]
-                notes = task["notes"] if task["notes"] else ""
-                completed_at = task["completed_at"]
+                notes = task["notes"] if pd.notna(task["notes"]) else ""
+                ref_num = task["ref_number"] if pd.notna(task["ref_number"]) else ""
+                sla = int(task["sla_days"]) if pd.notna(task["sla_days"]) else 2
 
-                with st.expander(f"Step {step}: {t_name} ({dept}) - **{status}**", expanded=(status == "In Progress")):
-                    if status == "Completed":
-                        st.success(f"✅ Completed at: {completed_at}")
-                        st.write(f"**Notes/Reference:** {notes}")
-                        previous_completed = True
-                    elif status == "In Progress" and previous_completed:
-                        st.warning("⏳ Task is ready for clearance action.")
-                        task_notes = st.text_area(f"Notes / Approval Reference for Step {step}", value=notes, key=f"note_{t_id}")
-                        if st.button(f"Mark Step {step} as Completed", key=f"btn_{t_id}", type="primary"):
+                # Parse dates safely
+                st_date_val = task["start_date"]
+                if pd.isna(st_date_val) or st_date_val is None:
+                    st_date = date.today()
+                    has_start_date = False
+                else:
+                    st_date = st_date_val if isinstance(st_date_val, date) else datetime.strptime(str(st_date_val), "%Y-%m-%d").date()
+                    has_start_date = True
+
+                comp_date_val = task["completion_date"]
+                if pd.isna(comp_date_val) or comp_date_val is None:
+                    comp_date = date.today()
+                    has_comp_date = False
+                else:
+                    comp_date = comp_date_val if isinstance(comp_date_val, date) else datetime.strptime(str(comp_date_val), "%Y-%m-%d").date()
+                    has_comp_date = True
+
+                # SLA & Duration Calculations
+                days_taken = None
+                is_overdue = False
+
+                if status == "Completed":
+                    if has_start_date and has_comp_date:
+                        days_taken = max(0, (comp_date - st_date).days)
+                    elif has_comp_date:
+                        days_taken = 0
+                    if days_taken is not None and days_taken > sla:
+                        is_overdue = True
+                elif status == "In Progress":
+                    if has_start_date:
+                        days_taken = max(0, (date.today() - st_date).days)
+                        if days_taken > sla:
+                            is_overdue = True
+
+                # Badge Label for Expander Title
+                if status == "Completed":
+                    badge = f"✅ Completed ({days_taken} days)" if days_taken is not None else "✅ Completed"
+                    if is_overdue:
+                        badge += f" 🚨 [OVERDUE by {days_taken - sla}d]"
+                elif status == "In Progress":
+                    badge = f"⏳ In Progress ({days_taken} days elapsed)" if days_taken is not None else "⏳ In Progress"
+                    if is_overdue:
+                        badge += f" 🚨 [SLA EXCEEDED by {days_taken - sla}d]"
+                else:
+                    badge = "🔒 Pending"
+
+                expander_title = f"Step {step}: {t_name} ({dept}) | Target SLA: {sla} Days | {badge}"
+
+                with st.expander(expander_title, expanded=(status == "In Progress")):
+                    if is_overdue:
+                        st.error(f"🚨 **SLA Violation Alert:** This step targeted **{sla}** day(s), but took/has taken **{days_taken}** day(s) (**{days_taken - sla}** days past target SLA).")
+                    elif status == "Completed" and days_taken is not None:
+                        st.success(f"✅ Step completed within target SLA in **{days_taken}** day(s) (Target: **{sla}** days).")
+
+                    col_t1, col_t2, col_t3 = st.columns(3)
+                    
+                    with col_t1:
+                        input_start = st.date_input(
+                            f"Start Date (Step {step})", 
+                            value=st_date if has_start_date else date.today(), 
+                            key=f"st_date_{t_id}",
+                            disabled=(status == "Pending" and not previous_completed)
+                        )
+                    with col_t2:
+                        input_comp = st.date_input(
+                            f"Completion Date (Step {step})", 
+                            value=comp_date if has_comp_date else date.today(), 
+                            key=f"comp_date_{t_id}",
+                            disabled=(status == "Pending" and not previous_completed)
+                        )
+                    with col_t3:
+                        input_ref = st.text_input(
+                            f"Reference / License #", 
+                            value=ref_num, 
+                            placeholder="e.g. LIC-9982 or DUTY-4412",
+                            key=f"ref_{t_id}",
+                            disabled=(status == "Pending" and not previous_completed)
+                        )
+
+                    input_notes = st.text_area(
+                        f"Notes / Approval Reference", 
+                        value=notes, 
+                        key=f"notes_{t_id}",
+                        disabled=(status == "Pending" and not previous_completed)
+                    )
+
+                    if status == "Pending":
+                        if previous_completed:
+                            if st.button(f"▶️ Start Step {step}", key=f"btn_start_{t_id}", type="primary"):
+                                conn = get_db_connection()
+                                cur = conn.cursor()
+                                cur.execute("""
+                                    UPDATE shipment_tasks 
+                                    SET status = 'In Progress', start_date = %s, ref_number = %s, notes = %s
+                                    WHERE task_id = %s;
+                                """, (input_start, input_ref, input_notes, t_id))
+                                conn.commit()
+                                conn.close()
+                                st.success(f"Step {step} started!")
+                                st.rerun()
+                        else:
+                            st.info("🔒 Complete the previous step first to unlock this task.")
+
+                    elif status == "In Progress":
+                        btn_c1, btn_c2 = st.columns(2)
+                        with btn_c1:
+                            if st.button(f"💾 Save Progress", key=f"btn_save_{t_id}", type="secondary"):
+                                conn = get_db_connection()
+                                cur = conn.cursor()
+                                cur.execute("""
+                                    UPDATE shipment_tasks 
+                                    SET start_date = %s, ref_number = %s, notes = %s
+                                    WHERE task_id = %s;
+                                """, (input_start, input_ref, input_notes, t_id))
+                                conn.commit()
+                                conn.close()
+                                st.success("Task progress updated!")
+                                st.rerun()
+
+                        with btn_c2:
+                            if st.button(f"✅ Mark Step {step} as Completed", key=f"btn_comp_{t_id}", type="primary"):
+                                conn = get_db_connection()
+                                cur = conn.cursor()
+
+                                cur.execute("""
+                                    UPDATE shipment_tasks 
+                                    SET status = 'Completed', start_date = %s, completion_date = %s, ref_number = %s, notes = %s
+                                    WHERE task_id = %s;
+                                """, (input_start, input_comp, input_ref, input_notes, t_id))
+
+                                cur.execute("""
+                                    UPDATE shipment_tasks
+                                    SET status = 'In Progress', start_date = %s
+                                    WHERE shipment_id = %s AND step_order = %s AND status = 'Pending';
+                                """, (input_comp, shp_id, step + 1))
+
+                                cur.execute("SELECT COUNT(*) FROM shipment_tasks WHERE shipment_id = %s AND status != 'Completed'", (shp_id,))
+                                remaining_tasks = cur.fetchone()[0]
+                                if remaining_tasks == 0:
+                                    cur.execute("UPDATE shipments SET status = 'Delivered' WHERE shipment_id = %s", (shp_id,))
+
+                                conn.commit()
+                                conn.close()
+                                st.success(f"Step {step} marked as Completed!")
+                                st.rerun()
+
+                    elif status == "Completed":
+                        if st.button(f"✏️ Update Completed Task Details", key=f"btn_edit_{t_id}", type="secondary"):
                             conn = get_db_connection()
                             cur = conn.cursor()
-
                             cur.execute("""
                                 UPDATE shipment_tasks 
-                                SET status = 'Completed', notes = %s, completed_at = CURRENT_TIMESTAMP
+                                SET start_date = %s, completion_date = %s, ref_number = %s, notes = %s
                                 WHERE task_id = %s;
-                            """, (task_notes, t_id))
-
-                            cur.execute("""
-                                UPDATE shipment_tasks
-                                SET status = 'In Progress'
-                                WHERE shipment_id = %s AND step_order = %s;
-                            """, (shp_id, step + 1))
-
-                            cur.execute("SELECT COUNT(*) FROM shipment_tasks WHERE shipment_id = %s AND status != 'Completed'", (shp_id,))
-                            remaining_tasks = cur.fetchone()[0]
-                            if remaining_tasks == 0:
-                                cur.execute("UPDATE shipments SET status = 'Delivered' WHERE shipment_id = %s", (shp_id,))
-
+                            """, (input_start, input_comp, input_ref, input_notes, t_id))
                             conn.commit()
                             conn.close()
-                            st.success(f"Step {step} marked as Completed!")
+                            st.success("Task details updated successfully!")
                             st.rerun()
-                        previous_completed = False
-                    else:
-                        st.error("🔒 Locked: Complete the previous step first.")
-                        previous_completed = False
+
+                previous_completed = (status == "Completed")
 
 # --- 4. SETTINGS & PRODUCT CATALOG ---
 elif choice == "Settings & Product Catalog":
