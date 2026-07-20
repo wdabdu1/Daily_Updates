@@ -24,7 +24,7 @@ def init_db(force_drop=False):
 
     if force_drop:
         c.execute(
-            "DROP TABLE IF EXISTS audit_logs, financial_ledger, shipment_tasks, shipment_contents, shipments, order_items, product_catalog, master_orders, users, holiday_calendar, task_definitions, ref_lists CASCADE;"
+            "DROP TABLE IF EXISTS audit_logs, financial_ledger, shipment_tasks, shipment_contents, shipments, order_items, product_catalog, master_orders, users, holiday_calendar, task_definitions, ref_lists, currency_rates CASCADE;"
         )
 
     # 1. Users Table
@@ -128,6 +128,12 @@ def init_db(force_drop=False):
                     notes TEXT,
                     completed_at TIMESTAMP WITH TIME ZONE)""")
 
+    # 10. Currency Rates Table
+    c.execute("""CREATE TABLE IF NOT EXISTS currency_rates (
+                    currency VARCHAR(20) PRIMARY KEY,
+                    rate_to_usd NUMERIC(15, 6) DEFAULT 1.0,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)""")
+
     # Seed Admin user if missing
     c.execute("SELECT * FROM users WHERE username='admin'")
     if not c.fetchone():
@@ -169,6 +175,7 @@ def init_db(force_drop=False):
             ("Type", "Spare Part"),
             ("CURRENCY", "USD"),
             ("CURRENCY", "EUR"),
+            ("CURRENCY", "SDG"),
             ("Mode of Shipment", "Sea Freight"),
             ("Mode of Shipment", "Air Freight"),
             ("Shipping Lines", "Maersk"),
@@ -183,6 +190,16 @@ def init_db(force_drop=False):
             c.execute(
                 "INSERT INTO ref_lists (category, item_name) VALUES (%s, %s)",
                 r,
+            )
+
+    # Seed default currency exchange rates
+    c.execute("SELECT COUNT(*) FROM currency_rates")
+    if c.fetchone()[0] == 0:
+        default_rates = [("USD", 1.0), ("EUR", 0.92), ("SDG", 600.0)]
+        for curr, r in default_rates:
+            c.execute(
+                "INSERT INTO currency_rates (currency, rate_to_usd) VALUES (%s, %s) ON CONFLICT (currency) DO NOTHING",
+                (curr, r),
             )
 
     # Seed catalog items ONLY IF empty
@@ -237,6 +254,15 @@ def add_ref_item(category, val):
         conn.close()
 
 
+def get_fx_rates():
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT currency, rate_to_usd FROM currency_rates", conn)
+    conn.close()
+    rates = dict(zip(df["currency"], df["rate_to_usd"]))
+    rates["USD"] = 1.0
+    return rates
+
+
 # --- APP LAYOUT & CONFIG ---
 st.set_page_config(layout="wide", page_title="Corporate Supply Chain Tracker")
 st.title("🚢 Corporate Supply Chain Tracker")
@@ -288,6 +314,8 @@ choice = st.sidebar.selectbox("Navigation Menu", menu)
 # --- 1. MASTER ORDERS DASHBOARD ---
 if choice == "Master Orders Dashboard":
     st.subheader("📦 Master Orders Overview")
+    fx_rates = get_fx_rates()
+
     conn = get_db_connection()
     orders_df = pd.read_sql_query(
         """
@@ -298,12 +326,12 @@ if choice == "Master Orders Dashboard":
                mo.supplier_id AS "Supplier", 
                mo.consignee AS "Consignee", 
                mo.offshore_company AS "Offshore Company", 
-               mo.currency AS "Currency", 
                mo.incoterm AS "Incoterm", 
                mo.payment_terms AS "Payment Terms", 
                mo.approval_type AS "Approval Type",
                COUNT(oi.item_id) AS "Total Line Items",
-               COALESCE(SUM(oi.ordered_qty * oi.supplier_unit_price), 0) AS "Total Order Value"
+               COALESCE(SUM(oi.ordered_qty * oi.supplier_unit_price), 0) AS "Total Order Value",
+               mo.currency AS "Currency"
         FROM master_orders mo
         LEFT JOIN order_items oi ON mo.order_id = oi.order_id
         GROUP BY mo.order_id, mo.po_number, mo.po_date, mo.bu_id, mo.division, mo.supplier_id, 
@@ -316,15 +344,25 @@ if choice == "Master Orders Dashboard":
     if orders_df.empty:
         st.info("No Master Orders found. Use 'Create Master Order' to add one.")
     else:
+        # Calculate Value ($) based on FX rates
+        values_usd = []
+        for _, row in orders_df.iterrows():
+            curr = row["Currency"] if row["Currency"] in fx_rates else "USD"
+            rate = float(fx_rates.get(curr, 1.0))
+            rate = rate if rate > 0 else 1.0
+            values_usd.append(float(row["Total Order Value"]) / rate)
+
+        orders_df["Value ($)"] = values_usd
+
         m1, m2, m3 = st.columns(3)
         m1.metric("Total Master Orders", len(orders_df))
-        total_val = orders_df["Total Order Value"].sum()
-        m2.metric("Total Value Managed", f"${total_val:,.2f}")
+        total_val_usd = sum(values_usd)
+        m2.metric("Total Value Managed (USD)", f"${total_val_usd:,.2f}")
         m3.metric("Total Line Items", int(orders_df["Total Line Items"].sum()))
 
         st.markdown("---")
         
-        # Clean Table with '#' sequence column
+        # Clean Table with '#' sequence column and correct column ordering
         view_orders_df = orders_df.copy()
         view_orders_df.insert(0, "#", range(1, 1 + len(view_orders_df)))
         
@@ -332,7 +370,9 @@ if choice == "Master Orders Dashboard":
             view_orders_df,
             column_config={
                 "#": st.column_config.NumberColumn("#", format="%d"),
-                "Total Order Value": st.column_config.NumberColumn("Total Order Value", format="$%,.2f"),
+                "Total Order Value": st.column_config.NumberColumn("Total Order Value", format="%,.2f"),
+                "Currency": st.column_config.TextColumn("Currency"),
+                "Value ($)": st.column_config.NumberColumn("Value ($)", format="$%,.2f"),
                 "Total Line Items": st.column_config.NumberColumn("Total Line Items", format="%d"),
             },
             use_container_width=True,
@@ -350,7 +390,8 @@ if choice == "Master Orders Dashboard":
                        oi.item_type AS "Type",
                        oi.ordered_qty AS "Ordered Qty", 
                        oi.supplier_unit_price AS "Unit Price", 
-                       (oi.ordered_qty * oi.supplier_unit_price) AS "Line Total"
+                       (oi.ordered_qty * oi.supplier_unit_price) AS "Line Total",
+                       mo.currency AS "Currency"
                 FROM order_items oi
                 JOIN master_orders mo ON oi.order_id = mo.order_id
                 WHERE mo.po_number = %s
@@ -359,15 +400,23 @@ if choice == "Master Orders Dashboard":
                 conn,
                 params=(selected_po,),
             )
+            
+            po_curr = items_df["Currency"].iloc[0] if not items_df.empty else "USD"
+            rate = float(fx_rates.get(po_curr, 1.0))
+            rate = rate if rate > 0 else 1.0
+
+            items_df["Value ($)"] = items_df["Line Total"] / rate
             items_df.insert(0, "#", range(1, 1 + len(items_df)))
+            
             st.write(f"**Baseline Order Details for PO:** `{selected_po}`")
             st.dataframe(
                 items_df,
                 column_config={
                     "#": st.column_config.NumberColumn("#", format="%d"),
                     "Ordered Qty": st.column_config.NumberColumn("Ordered Qty", format="%,.2f"),
-                    "Unit Price": st.column_config.NumberColumn("Unit Price", format="$%,.2f"),
-                    "Line Total": st.column_config.NumberColumn("Line Total", format="$%,.2f"),
+                    "Unit Price": st.column_config.NumberColumn("Unit Price", format="%,.2f"),
+                    "Line Total": st.column_config.NumberColumn("Line Total", format="%,.2f"),
+                    "Value ($)": st.column_config.NumberColumn("Value ($)", format="$%,.2f"),
                 },
                 use_container_width=True,
                 hide_index=True
@@ -429,7 +478,6 @@ elif choice == "Create Master Order":
                 "Payment Terms", payment_options if payment_options else ["30 Days Net"]
             )
 
-        # Pull product choices based on the chosen Business Unit (BU)
         conn = get_db_connection()
         catalog_df = pd.read_sql_query(
             "SELECT model_code, category, description FROM product_catalog WHERE bu_id = %s ORDER BY model_code",
@@ -452,7 +500,7 @@ elif choice == "Create Master Order":
                     "Model Product Code": catalog_codes[0] if catalog_codes else "",
                     "Type": type_options[0] if type_options else "Finished Good",
                     "Ordered Qty": 1.0,
-                    "Unit Price ($)": 0.0,
+                    "Unit Price": 0.0,
                 }
             ]
         )
@@ -473,8 +521,8 @@ elif choice == "Create Master Order":
                 "Ordered Qty": st.column_config.NumberColumn(
                     "Ordered Qty", min_value=1.0, default=1.0, format="%,.2f"
                 ),
-                "Unit Price ($)": st.column_config.NumberColumn(
-                    "Unit Price ($)", min_value=0.0, format="$%,.2f"
+                "Unit Price": st.column_config.NumberColumn(
+                    f"Unit Price ({currency})", min_value=0.0, format="%,.2f"
                 ),
             },
             use_container_width=True,
@@ -504,7 +552,7 @@ elif choice == "Create Master Order":
                         model_code = row["Model Product Code"]
                         itype = row["Type"]
                         qty = row["Ordered Qty"]
-                        price = row["Unit Price ($)"]
+                        price = row["Unit Price"]
                         
                         cat_res = catalog_df[catalog_df["model_code"] == model_code]
                         item_cat = cat_res["category"].values[0] if not cat_res.empty else ""
@@ -520,15 +568,14 @@ elif choice == "Create Master Order":
 
                     conn.commit()
                     conn.close()
-                    st.success(
-                        f"Master Order **{po_number}** created successfully!"
-                    )
+                    st.success(f"Master Order **{po_number}** created successfully!")
                 except Exception as ex:
                     st.error(f"Failed to save order: {ex}")
 
 # --- 3. SHIPMENTS & TASK MANAGER ---
 elif choice == "Shipments & Task Manager":
     st.subheader("🚚 Shipments & Sequential Clearance Manager")
+    fx_rates = get_fx_rates()
 
     s_tab1, s_tab2 = st.tabs(["Create Partial or Full Shipment", "Clearance Task Engine"])
 
@@ -577,7 +624,13 @@ elif choice == "Shipments & Task Manager":
                 balance = float(r.remaining_qty)
                 alloc_qty = balance if balance > 0 else 0.0
                 unit_price = float(r.supplier_unit_price)
-                
+                curr = r.currency if r.currency else "USD"
+                rate = float(fx_rates.get(curr, 1.0))
+                rate = rate if rate > 0 else 1.0
+
+                line_total = alloc_qty * unit_price
+                val_usd = line_total / rate
+
                 allocation_data.append({
                     "#": idx,
                     "Item ID": r.item_id,
@@ -587,8 +640,9 @@ elif choice == "Shipments & Task Manager":
                     "Model/Product": r.model_product,
                     "Qty": alloc_qty,
                     "Unit Price": unit_price,
-                    "Total": alloc_qty * unit_price,
-                    "Currency": r.currency if r.currency else "USD",
+                    "Total": line_total,
+                    "Currency": curr,
+                    "Value ($)": val_usd,
                     "PO TTL Qty": float(r.ordered_qty),
                     "Rem. Qty": balance
                 })
@@ -599,14 +653,16 @@ elif choice == "Shipments & Task Manager":
                 alloc_df,
                 disabled=[
                     "#", "Item ID", "BU", "Supplier", "Brand", "Model/Product", 
-                    "Unit Price", "Total", "Currency", "PO TTL Qty", "Rem. Qty"
+                    "Unit Price", "Total", "Currency", "Value ($)", "PO TTL Qty", "Rem. Qty"
                 ],
                 column_config={
-                    "Item ID": None,  # Hidden internal key
+                    "Item ID": None,
                     "#": st.column_config.NumberColumn("#", format="%d"),
-                    "Qty": st.column_config.NumberColumn("Qty (Current Ship)", min_value=0.0, format="%,.2f"),
-                    "Unit Price": st.column_config.NumberColumn("Unit Price", format="$%,.2f"),
-                    "Total": st.column_config.NumberColumn("Total", format="$%,.2f"),
+                    "Qty": st.column_config.NumberColumn("Qty", min_value=0.0, format="%,.2f"),
+                    "Unit Price": st.column_config.NumberColumn("Unit Price", format="%,.2f"),
+                    "Total": st.column_config.NumberColumn("Total", format="%,.2f"),
+                    "Currency": st.column_config.TextColumn("Currency"),
+                    "Value ($)": st.column_config.NumberColumn("Value ($)", format="$%,.2f"),
                     "PO TTL Qty": st.column_config.NumberColumn("PO TTL Qty", format="%,.2f"),
                     "Rem. Qty": st.column_config.NumberColumn("Rem. Qty", format="%,.2f"),
                 },
@@ -614,7 +670,6 @@ elif choice == "Shipments & Task Manager":
                 hide_index=True
             )
 
-            # Updated button label to "Create Shipment"
             if st.button("🚀 Create Shipment", type="primary"):
                 if not bl_awb:
                     st.error("BL / AWB Number is required!")
@@ -657,7 +712,7 @@ elif choice == "Shipments & Task Manager":
                     except Exception as e_shp:
                         st.error(f"Failed to create shipment: {e_shp}")
 
-            # Display saved shipments table below button with BL as reference
+            # Display saved shipments table below button
             st.markdown("---")
             st.markdown(f"##### Saved Shipment Lines for PO `{selected_po_ref}`")
             
@@ -685,14 +740,25 @@ elif choice == "Shipments & Task Manager":
             if saved_df.empty:
                 st.info("No shipments registered yet for this PO.")
             else:
+                saved_vals_usd = []
+                for _, r in saved_df.iterrows():
+                    curr = r["Currency"] if r["Currency"] in fx_rates else "USD"
+                    rate = float(fx_rates.get(curr, 1.0))
+                    rate = rate if rate > 0 else 1.0
+                    saved_vals_usd.append(float(r["Total"]) / rate)
+
+                saved_df["Value ($)"] = saved_vals_usd
                 saved_df.insert(0, "#", range(1, 1 + len(saved_df)))
+                
                 st.dataframe(
                     saved_df,
                     column_config={
                         "#": st.column_config.NumberColumn("#", format="%d"),
                         "Qty": st.column_config.NumberColumn("Qty", format="%,.2f"),
-                        "Unit Price": st.column_config.NumberColumn("Unit Price", format="$%,.2f"),
-                        "Total": st.column_config.NumberColumn("Total", format="$%,.2f"),
+                        "Unit Price": st.column_config.NumberColumn("Unit Price", format="%,.2f"),
+                        "Total": st.column_config.NumberColumn("Total", format="%,.2f"),
+                        "Currency": st.column_config.TextColumn("Currency"),
+                        "Value ($)": st.column_config.NumberColumn("Value ($)", format="$%,.2f"),
                     },
                     use_container_width=True,
                     hide_index=True
@@ -785,8 +851,9 @@ elif choice == "Shipments & Task Manager":
 elif choice == "Settings & Product Catalog":
     st.subheader("⚙️ Control Settings & Product Catalog")
 
-    tab1, tab2 = st.tabs(["Product Catalog", "Reference Lists"])
+    tab1, tab2, tab3 = st.tabs(["Product Catalog", "Reference Lists", "Finance"])
 
+    # TAB 1: Product Catalog
     with tab1:
         st.markdown("#### 📦 Product Catalog Management")
         conn = get_db_connection()
@@ -839,6 +906,7 @@ elif choice == "Settings & Product Catalog":
                 finally:
                     conn.close()
 
+    # TAB 2: Reference Lists
     with tab2:
         st.markdown("#### Reference Lists Management")
         
@@ -867,3 +935,53 @@ elif choice == "Settings & Product Catalog":
             if not ref_items_df.empty:
                 ref_items_df.insert(0, "#", range(1, 1 + len(ref_items_df)))
                 st.dataframe(ref_items_df, hide_index=True, use_container_width=True)
+
+    # TAB 3: Finance & Exchange Rates
+    with tab3:
+        st.markdown("#### 💱 Currency & Exchange Rate Management")
+        st.info("Define exchange rates relative to USD. **1 USD = X Local Currency**")
+
+        conn = get_db_connection()
+        rates_df = pd.read_sql_query("SELECT currency AS \"Currency\", rate_to_usd AS \"1 USD Equivalent Rate\", updated_at AS \"Last Updated\" FROM currency_rates ORDER BY currency", conn)
+        conn.close()
+
+        if not rates_df.empty:
+            rates_df.insert(0, "#", range(1, 1 + len(rates_df)))
+            st.dataframe(
+                rates_df,
+                column_config={
+                    "#": st.column_config.NumberColumn("#", format="%d"),
+                    "1 USD Equivalent Rate": st.column_config.NumberColumn("1 USD Equivalent Rate", format="%,.4f")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+
+        st.markdown("##### Update / Add Exchange Rate")
+        avail_currencies = get_ref_list("CURRENCY")
+        if "USD" not in avail_currencies:
+            avail_currencies.append("USD")
+
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            sel_curr = st.selectbox("Select Currency", avail_currencies)
+        with col_f2:
+            curr_rate = st.number_input(f"1 USD = how much {sel_curr}?", min_value=0.000001, value=1.0, format="%.4f")
+
+        if st.button("Save Exchange Rate"):
+            conn = get_db_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute("""
+                    INSERT INTO currency_rates (currency, rate_to_usd, updated_at)
+                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (currency) 
+                    DO UPDATE SET rate_to_usd = EXCLUDED.rate_to_usd, updated_at = CURRENT_TIMESTAMP;
+                """, (sel_curr, curr_rate))
+                conn.commit()
+                st.success(f"Exchange rate updated: **1 USD = {curr_rate:,.4f} {sel_curr}**")
+                st.rerun()
+            except Exception as e_fx:
+                st.error(f"Error saving exchange rate: {e_fx}")
+            finally:
+                conn.close()
