@@ -35,6 +35,8 @@ def init_db(force_drop=False):
                     role VARCHAR(50),
                     scope_bu_id VARCHAR(20))""")
     c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;")
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50);")
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS scope_bu_id VARCHAR(20);")
 
     # 2. Master Dropdowns / Ref Lists
     c.execute("""CREATE TABLE IF NOT EXISTS ref_lists (
@@ -42,6 +44,9 @@ def init_db(force_drop=False):
                     category VARCHAR(50), 
                     item_name VARCHAR(100),
                     is_active BOOLEAN DEFAULT TRUE)""")
+    c.execute("ALTER TABLE ref_lists ADD COLUMN IF NOT EXISTS category VARCHAR(50);")
+    c.execute("ALTER TABLE ref_lists ADD COLUMN IF NOT EXISTS item_name VARCHAR(100);")
+    c.execute("ALTER TABLE ref_lists ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;")
 
     c.execute("""
         DELETE FROM ref_lists a USING ref_lists b 
@@ -55,6 +60,10 @@ def init_db(force_drop=False):
                     description TEXT,
                     category VARCHAR(50),
                     standard_unit_price NUMERIC(15, 2))""")
+    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS model_code VARCHAR(50);")
+    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS description TEXT;")
+    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS category VARCHAR(50);")
+    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS standard_unit_price NUMERIC(15, 2);")
 
     # 4. Master Orders
     c.execute("""CREATE TABLE IF NOT EXISTS master_orders (
@@ -66,6 +75,12 @@ def init_db(force_drop=False):
                     incoterm VARCHAR(20), 
                     approval_type VARCHAR(50), 
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS po_number VARCHAR(50);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS bu_id VARCHAR(20);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS supplier_id VARCHAR(100);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS currency VARCHAR(10);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS incoterm VARCHAR(20);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS approval_type VARCHAR(50);")
 
     # 5. Order Items
     c.execute("""CREATE TABLE IF NOT EXISTS order_items (
@@ -74,6 +89,10 @@ def init_db(force_drop=False):
                     model_product VARCHAR(100), 
                     ordered_qty NUMERIC(15, 2), 
                     supplier_unit_price NUMERIC(15, 2))""")
+    c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS order_id INTEGER REFERENCES master_orders(order_id) ON DELETE CASCADE;")
+    c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS model_product VARCHAR(100);")
+    c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS ordered_qty NUMERIC(15, 2);")
+    c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS supplier_unit_price NUMERIC(15, 2);")
 
     # 6. Task Definitions
     c.execute("""CREATE TABLE IF NOT EXISTS task_definitions (
@@ -102,7 +121,7 @@ def init_db(force_drop=False):
                 t,
             )
 
-    # 7. Shipments Table & Non-destructive Column Migrations
+    # 7. Shipments Table & Column Migrations
     c.execute("""CREATE TABLE IF NOT EXISTS shipments (
                     shipment_id SERIAL PRIMARY KEY,
                     shipment_ref VARCHAR(50) UNIQUE,
@@ -111,6 +130,7 @@ def init_db(force_drop=False):
                     eta DATE,
                     status VARCHAR(50) DEFAULT 'In Clearance',
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("ALTER TABLE shipments ADD COLUMN IF NOT EXISTS order_id INTEGER REFERENCES master_orders(order_id) ON DELETE CASCADE;")
     c.execute("ALTER TABLE shipments ADD COLUMN IF NOT EXISTS shipment_ref VARCHAR(50);")
     c.execute("ALTER TABLE shipments ADD COLUMN IF NOT EXISTS bl_awb VARCHAR(100);")
     c.execute("ALTER TABLE shipments ADD COLUMN IF NOT EXISTS eta DATE;")
@@ -122,8 +142,11 @@ def init_db(force_drop=False):
                     shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
                     item_id INTEGER REFERENCES order_items(item_id),
                     shipped_qty NUMERIC(15, 2))""")
+    c.execute("ALTER TABLE shipment_contents ADD COLUMN IF NOT EXISTS shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE;")
+    c.execute("ALTER TABLE shipment_contents ADD COLUMN IF NOT EXISTS item_id INTEGER REFERENCES order_items(item_id);")
+    c.execute("ALTER TABLE shipment_contents ADD COLUMN IF NOT EXISTS shipped_qty NUMERIC(15, 2);")
 
-    # 9. Shipment Clearance Tasks Table & Non-destructive Column Migrations
+    # 9. Shipment Clearance Tasks Table
     c.execute("""CREATE TABLE IF NOT EXISTS shipment_tasks (
                     task_id SERIAL PRIMARY KEY,
                     shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
@@ -133,6 +156,7 @@ def init_db(force_drop=False):
                     status VARCHAR(50) DEFAULT 'Pending',
                     notes TEXT,
                     completed_at TIMESTAMP WITH TIME ZONE)""")
+    c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE;")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS step_order INT;")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS task_name VARCHAR(100);")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS department VARCHAR(50);")
