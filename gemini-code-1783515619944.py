@@ -33,12 +33,12 @@ def init_db(force_drop=False):
                     username VARCHAR(50) UNIQUE, 
                     password TEXT, 
                     role VARCHAR(50),
-                    scope_bu_id VARCHAR(20))""")
+                    scope_bu_id VARCHAR(50))""")
     c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;")
     c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50);")
-    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS scope_bu_id VARCHAR(20);")
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS scope_bu_id VARCHAR(50);")
 
-    # 2. Master Dropdowns / Ref Lists
+    # 2. Ref Lists Table
     c.execute("""CREATE TABLE IF NOT EXISTS ref_lists (
                     id SERIAL PRIMARY KEY,
                     category VARCHAR(50), 
@@ -53,44 +53,60 @@ def init_db(force_drop=False):
         WHERE a.id < b.id AND a.category = b.category AND a.item_name = b.item_name;
     """)
 
-    # 3. Product Catalog
+    # 3. Product Catalog Table
     c.execute("""CREATE TABLE IF NOT EXISTS product_catalog (
                     product_id SERIAL PRIMARY KEY,
-                    model_code VARCHAR(50) UNIQUE,
-                    description TEXT,
-                    category VARCHAR(50),
-                    standard_unit_price NUMERIC(15, 2))""")
-    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS model_code VARCHAR(50);")
+                    bu_id VARCHAR(50),
+                    brand_manuf VARCHAR(100),
+                    category VARCHAR(100),
+                    model_code VARCHAR(100) UNIQUE,
+                    description TEXT)""")
+    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS bu_id VARCHAR(50);")
+    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS brand_manuf VARCHAR(100);")
+    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS category VARCHAR(100);")
+    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS model_code VARCHAR(100);")
     c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS description TEXT;")
-    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS category VARCHAR(50);")
-    c.execute("ALTER TABLE product_catalog ADD COLUMN IF NOT EXISTS standard_unit_price NUMERIC(15, 2);")
 
-    # 4. Master Orders
+    # 4. Master Orders Table
     c.execute("""CREATE TABLE IF NOT EXISTS master_orders (
                     order_id SERIAL PRIMARY KEY, 
                     po_number VARCHAR(50) UNIQUE, 
-                    bu_id VARCHAR(20), 
+                    bu_id VARCHAR(50), 
+                    division VARCHAR(100),
                     supplier_id VARCHAR(100), 
-                    currency VARCHAR(10), 
-                    incoterm VARCHAR(20), 
-                    approval_type VARCHAR(50), 
+                    po_date DATE,
+                    currency VARCHAR(20), 
+                    incoterm VARCHAR(50), 
+                    approval_type VARCHAR(50),
+                    consignee VARCHAR(100),
+                    offshore_company VARCHAR(100),
+                    payment_terms VARCHAR(100),
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)""")
     c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS po_number VARCHAR(50);")
-    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS bu_id VARCHAR(20);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS bu_id VARCHAR(50);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS division VARCHAR(100);")
     c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS supplier_id VARCHAR(100);")
-    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS currency VARCHAR(10);")
-    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS incoterm VARCHAR(20);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS po_date DATE;")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS currency VARCHAR(20);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS incoterm VARCHAR(50);")
     c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS approval_type VARCHAR(50);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS consignee VARCHAR(100);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS offshore_company VARCHAR(100);")
+    c.execute("ALTER TABLE master_orders ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(100);")
 
-    # 5. Order Items
+    # 5. Order Items Table
     c.execute("""CREATE TABLE IF NOT EXISTS order_items (
                     item_id SERIAL PRIMARY KEY, 
                     order_id INTEGER REFERENCES master_orders(order_id) ON DELETE CASCADE, 
                     model_product VARCHAR(100), 
+                    category VARCHAR(100),
+                    item_type VARCHAR(100),
                     ordered_qty NUMERIC(15, 2), 
                     supplier_unit_price NUMERIC(15, 2))""")
     c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS order_id INTEGER REFERENCES master_orders(order_id) ON DELETE CASCADE;")
     c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS model_product VARCHAR(100);")
+    c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS category VARCHAR(100);")
+    c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS item_type VARCHAR(100);")
     c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS ordered_qty NUMERIC(15, 2);")
     c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS supplier_unit_price NUMERIC(15, 2);")
 
@@ -121,7 +137,7 @@ def init_db(force_drop=False):
                 t,
             )
 
-    # 7. Shipments Table & Column Migrations
+    # 7. Shipments Table
     c.execute("""CREATE TABLE IF NOT EXISTS shipments (
                     shipment_id SERIAL PRIMARY KEY,
                     shipment_ref VARCHAR(50) UNIQUE,
@@ -179,14 +195,41 @@ def init_db(force_drop=False):
         seed_ref = [
             ("BU", "Consumer Electronics"),
             ("BU", "Heavy Machinery"),
+            ("Off Shore Companies", "Global Trading FZE"),
+            ("Off Shore Companies", "Apex Holdings Ltd"),
+            ("Consignee", "Primary Logistics Warehouse"),
+            ("Consignee", "Regional Distribution Hub"),
+            ("Div", "Retail Operations"),
+            ("Div", "Industrial Sales"),
             ("Supplier", "Global Tech Offshore"),
             ("Supplier", "Industrial Parts LLC"),
-            ("Currency", "USD"),
-            ("Currency", "EUR"),
-            ("Incoterm", "FOB"),
-            ("Incoterm", "CIF"),
-            ("Approval", "Standard"),
-            ("Approval", "Director"),
+            ("Brand/Manuf.", "Lenovo"),
+            ("Brand/Manuf.", "Apple"),
+            ("Brand/Manuf.", "Caterpillar"),
+            ("Approval Type", "Standard"),
+            ("Approval Type", "Director"),
+            ("Payment Terms", "30 Days Net"),
+            ("Payment Terms", "Letter of Credit"),
+            ("INCOTERM", "FOB"),
+            ("INCOTERM", "CIF"),
+            ("ORIGINs", "China"),
+            ("ORIGINs", "Germany"),
+            ("ORIGINs", "USA"),
+            ("Category", "Electronics"),
+            ("Category", "Machinery"),
+            ("Type", "Finished Good"),
+            ("Type", "Spare Part"),
+            ("CURRENCY", "USD"),
+            ("CURRENCY", "EUR"),
+            ("Mode of Shipment", "Sea Freight"),
+            ("Mode of Shipment", "Air Freight"),
+            ("Shipping Lines", "Maersk"),
+            ("Shipping Lines", "MSC"),
+            ("Forwarders", "DHL Logistics"),
+            ("Forwarders", "Kuehne + Nagel"),
+            ("Sender Banks", "HSBC NY"),
+            ("Receiving Banks", "Standard Chartered"),
+            ("Tenor", "90 Days"),
         ]
         for r in seed_ref:
             c.execute(
@@ -198,13 +241,13 @@ def init_db(force_drop=False):
     c.execute("SELECT COUNT(*) FROM product_catalog")
     if c.fetchone()[0] == 0:
         seed_catalog = [
-            ("LAP-100", "ThinkPad T14", "Electronics", 1200.00),
-            ("LAP-200", "MacBook Pro", "Electronics", 2000.00),
-            ("MOT-550", "Heavy Duty Motor", "Machinery", 4500.00),
+            ("Consumer Electronics", "Lenovo", "Electronics", "LAP-100", "ThinkPad T14 Laptop"),
+            ("Consumer Electronics", "Apple", "Electronics", "LAP-200", "MacBook Pro 16 Inch"),
+            ("Heavy Machinery", "Caterpillar", "Machinery", "MOT-550", "Heavy Duty Motor Unit"),
         ]
         for p in seed_catalog:
             c.execute(
-                "INSERT INTO product_catalog (model_code, description, category, standard_unit_price) VALUES (%s, %s, %s, %s)",
+                "INSERT INTO product_catalog (bu_id, brand_manuf, category, model_code, description) VALUES (%s, %s, %s, %s, %s)",
                 p,
             )
 
@@ -212,11 +255,11 @@ def init_db(force_drop=False):
     conn.close()
 
 
-# Safe initial build check
+# Dynamic schema sync initialization
 try:
     init_db(force_drop=False)
 except Exception as e:
-    st.error(f"Database sync roadblock: {e}")
+    st.error(f"Database sync check: {e}")
 
 
 # --- DYNAMIC INTERFACE UTILITIES ---
@@ -300,8 +343,8 @@ if choice == "Master Orders Dashboard":
     conn = get_db_connection()
     orders_df = pd.read_sql_query(
         """
-        SELECT mo.order_id, mo.po_number, mo.bu_id, mo.supplier_id, mo.currency, 
-               mo.incoterm, mo.approval_type, mo.created_at,
+        SELECT mo.order_id, mo.po_number, mo.po_date, mo.bu_id, mo.division, mo.supplier_id, 
+               mo.consignee, mo.offshore_company, mo.currency, mo.incoterm, mo.payment_terms, mo.approval_type,
                COUNT(oi.item_id) as total_items,
                COALESCE(SUM(oi.ordered_qty * oi.supplier_unit_price), 0) as total_order_value
         FROM master_orders mo
@@ -325,28 +368,25 @@ if choice == "Master Orders Dashboard":
         st.dataframe(orders_df, use_container_width=True)
 
         selected_po = st.selectbox(
-            "Select PO to View Line Items Detail", orders_df["po_number"].tolist()
+            "Select PO to View Clean Item Details", orders_df["po_number"].tolist()
         )
         if selected_po:
             items_df = pd.read_sql_query(
                 """
-                SELECT oi.item_id, oi.model_product, pc.description, pc.category, 
-                       oi.ordered_qty, 
-                       COALESCE(SUM(sc.shipped_qty), 0) as shipped_qty,
-                       (oi.ordered_qty - COALESCE(SUM(sc.shipped_qty), 0)) as remaining_qty,
-                       oi.supplier_unit_price, 
+                SELECT oi.item_id, oi.model_product, oi.category, oi.item_type,
+                       oi.ordered_qty, oi.supplier_unit_price, 
                        (oi.ordered_qty * oi.supplier_unit_price) as line_total
                 FROM order_items oi
                 JOIN master_orders mo ON oi.order_id = mo.order_id
-                LEFT JOIN product_catalog pc ON oi.model_product = pc.model_code
-                LEFT JOIN shipment_contents sc ON oi.item_id = sc.item_id
                 WHERE mo.po_number = %s
-                GROUP BY oi.item_id, oi.model_product, pc.description, pc.category, oi.ordered_qty, oi.supplier_unit_price
+                ORDER BY oi.item_id ASC
             """,
                 conn,
                 params=(selected_po,),
             )
-            st.write(f"**Line Items & Shipping Balance for PO:** `{selected_po}`")
+            items_df.insert(0, "Seq #", range(1, 1 + len(items_df)))
+            items_df = items_df.drop(columns=["item_id"])
+            st.write(f"**Baseline PO Items for:** `{selected_po}`")
             st.dataframe(items_df, use_container_width=True)
 
     conn.close()
@@ -359,56 +399,77 @@ elif choice == "Create Master Order":
         st.subheader("📝 Create New Master Order")
 
         bu_options = get_ref_list("BU")
+        div_options = get_ref_list("Div")
         supplier_options = get_ref_list("Supplier")
-        currency_options = get_ref_list("Currency")
-        incoterm_options = get_ref_list("Incoterm")
-        approval_options = get_ref_list("Approval")
-
-        conn = get_db_connection()
-        catalog_df = pd.read_sql_query(
-            "SELECT DISTINCT model_code, description, category, standard_unit_price FROM product_catalog ORDER BY model_code",
-            conn,
-        )
-        conn.close()
-
-        catalog_map = catalog_df.set_index("model_code").to_dict("index")
-        catalog_codes = catalog_df["model_code"].tolist()
+        consignee_options = get_ref_list("Consignee")
+        offshore_options = get_ref_list("Off Shore Companies")
+        payment_options = get_ref_list("Payment Terms")
+        incoterm_options = get_ref_list("INCOTERM")
+        currency_options = get_ref_list("CURRENCY")
+        approval_options = get_ref_list("Approval Type")
+        type_options = get_ref_list("Type")
 
         st.markdown("### 1. Header Details")
+        
+        # Priority Primary Header Section
         c1, c2, c3 = st.columns(3)
         with c1:
+            selected_bu = st.selectbox(
+                "Business Unit (BU) *", bu_options if bu_options else ["Default BU"]
+            )
             po_number = st.text_input("PO Number *")
-            bu_id = st.selectbox(
-                "Business Unit", bu_options if bu_options else ["Default BU"]
+            consignee = st.selectbox(
+                "Consignee", consignee_options if consignee_options else ["Default Consignee"]
+            )
+            incoterm = st.selectbox(
+                "Incoterm", incoterm_options if incoterm_options else ["FOB", "CIF"]
             )
         with c2:
-            supplier_id = st.selectbox(
-                "Supplier", supplier_options if supplier_options else ["Default Supplier"]
+            division = st.selectbox(
+                "Division", div_options if div_options else ["Default Div"]
+            )
+            po_date = st.date_input("PO Date *", value=date.today())
+            offshore_company = st.selectbox(
+                "Off Shore Company", offshore_options if offshore_options else ["Default Offshore"]
             )
             currency = st.selectbox(
                 "Currency", currency_options if currency_options else ["USD", "EUR"]
             )
         with c3:
-            incoterm = st.selectbox(
-                "Incoterm", incoterm_options if incoterm_options else ["FOB", "CIF"]
+            supplier_id = st.selectbox(
+                "Supplier *", supplier_options if supplier_options else ["Default Supplier"]
             )
             approval_type = st.selectbox(
                 "Approval Type", approval_options if approval_options else ["Standard"]
             )
+            payment_terms = st.selectbox(
+                "Payment Terms", payment_options if payment_options else ["30 Days Net"]
+            )
+
+        # Pull product choices based on the chosen Business Unit (BU)
+        conn = get_db_connection()
+        catalog_df = pd.read_sql_query(
+            "SELECT model_code, category, description FROM product_catalog WHERE bu_id = %s ORDER BY model_code",
+            conn,
+            params=(selected_bu,),
+        )
+        conn.close()
+
+        catalog_codes = catalog_df["model_code"].tolist() if not catalog_df.empty else []
 
         st.markdown("---")
-        st.markdown("### 2. Order Line Items")
+        st.markdown(f"### 2. Line Items (Filtered for BU: `{selected_bu}`)")
+
+        if not catalog_codes:
+            st.warning(f"No product catalog entries found under '{selected_bu}'. Add products under 'Settings & Product Catalog' first.")
 
         default_items = pd.DataFrame(
             [
                 {
                     "Model Product Code": catalog_codes[0] if catalog_codes else "",
+                    "Type": type_options[0] if type_options else "Finished Good",
                     "Ordered Qty": 1.0,
-                    "Unit Price ($)": float(
-                        catalog_map[catalog_codes[0]]["standard_unit_price"]
-                    )
-                    if catalog_codes
-                    else 0.0,
+                    "Unit Price ($)": 0.0,
                 }
             ]
         )
@@ -418,12 +479,16 @@ elif choice == "Create Master Order":
             num_rows="dynamic",
             column_config={
                 "Model Product Code": st.column_config.SelectboxColumn(
-                    "Model Product Code",
-                    options=catalog_codes,
+                    "Model / Product Code",
+                    options=catalog_codes if catalog_codes else ["N/A"],
                     required=True,
                 ),
+                "Type": st.column_config.SelectboxColumn(
+                    "Type",
+                    options=type_options if type_options else ["Finished Good"],
+                ),
                 "Ordered Qty": st.column_config.NumberColumn(
-                    "Ordered Qty", min_value=1, default=1
+                    "Ordered Qty", min_value=1.0, default=1.0
                 ),
                 "Unit Price ($)": st.column_config.NumberColumn(
                     "Unit Price ($)", min_value=0.0, format="$%.2f"
@@ -442,25 +507,33 @@ elif choice == "Create Master Order":
 
                     cur.execute(
                         """
-                        INSERT INTO master_orders (po_number, bu_id, supplier_id, currency, incoterm, approval_type)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO master_orders (po_number, bu_id, division, supplier_id, po_date, 
+                                                   consignee, offshore_company, currency, incoterm, approval_type, payment_terms)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING order_id;
                     """,
-                        (po_number, bu_id, supplier_id, currency, incoterm, approval_type),
+                        (po_number, selected_bu, division, supplier_id, po_date, 
+                         consignee, offshore_company, currency, incoterm, approval_type, payment_terms),
                     )
                     order_id = cur.fetchone()[0]
 
                     for _, row in edited_df.iterrows():
                         model_code = row["Model Product Code"]
+                        itype = row["Type"]
                         qty = row["Ordered Qty"]
                         price = row["Unit Price ($)"]
+                        
+                        # Lookup category from catalog
+                        cat_res = catalog_df[catalog_df["model_code"] == model_code]
+                        item_cat = cat_res["category"].values[0] if not cat_res.empty else ""
+
                         if model_code:
                             cur.execute(
                                 """
-                                INSERT INTO order_items (order_id, model_product, ordered_qty, supplier_unit_price)
-                                VALUES (%s, %s, %s, %s);
+                                INSERT INTO order_items (order_id, model_product, category, item_type, ordered_qty, supplier_unit_price)
+                                VALUES (%s, %s, %s, %s, %s, %s);
                             """,
-                                (order_id, model_code, qty, price),
+                                (order_id, model_code, item_cat, itype, qty, price),
                             )
 
                     conn.commit()
@@ -481,7 +554,7 @@ elif choice == "Shipments & Task Manager":
     with s_tab1:
         st.markdown("#### Create Partial or Full Shipment")
         conn = get_db_connection()
-        po_df = pd.read_sql_query("SELECT order_id, po_number FROM master_orders ORDER BY order_id DESC", conn)
+        po_df = pd.read_sql_query("SELECT order_id, po_number, bu_id FROM master_orders ORDER BY order_id DESC", conn)
         conn.close()
 
         if po_df.empty:
@@ -493,13 +566,14 @@ elif choice == "Shipments & Task Manager":
 
             conn = get_db_connection()
             items_df = pd.read_sql_query("""
-                SELECT oi.item_id, oi.model_product, oi.ordered_qty,
+                SELECT oi.item_id, oi.model_product, oi.category, oi.item_type, oi.ordered_qty, oi.supplier_unit_price,
                        COALESCE(SUM(sc.shipped_qty), 0) as total_shipped,
                        (oi.ordered_qty - COALESCE(SUM(sc.shipped_qty), 0)) as remaining_qty
                 FROM order_items oi
                 LEFT JOIN shipment_contents sc ON oi.item_id = sc.item_id
                 WHERE oi.order_id = %s
-                GROUP BY oi.item_id, oi.model_product, oi.ordered_qty
+                GROUP BY oi.item_id, oi.model_product, oi.category, oi.item_type, oi.ordered_qty, oi.supplier_unit_price
+                ORDER BY oi.item_id ASC
             """, conn, params=(selected_order_id,))
             conn.close()
 
@@ -514,22 +588,38 @@ elif choice == "Shipments & Task Manager":
             st.markdown("##### Allocate Quantities for this Shipment")
             
             allocation_data = []
-            for _, r in items_df.iterrows():
+            for idx, r in enumerate(items_df.itertuples(), start=1):
+                already_shipped = float(r.total_shipped)
+                balance = float(r.remaining_qty)
+                alloc_qty = balance if balance > 0 else 0.0
                 allocation_data.append({
-                    "Item ID": r["item_id"],
-                    "Product Code": r["model_product"],
-                    "Total Ordered": float(r["ordered_qty"]),
-                    "Already Shipped": float(r["total_shipped"]),
-                    "Remaining Balance": float(r["remaining_qty"]),
-                    "Ship Quantity": float(r["remaining_qty"])
+                    "Seq #": idx,
+                    "Item ID": r.item_id,
+                    "Category": r.category if r.category else "",
+                    "Model / Product": r.model_product,
+                    "Type": r.item_type if r.item_type else "",
+                    "Ordered Qty": float(r.ordered_qty),
+                    "Unit Price ($)": float(r.supplier_unit_price),
+                    "Qty Shipped Already": already_shipped,
+                    "Balance to Ship": balance,
+                    "Current Ship Qty": alloc_qty,
+                    "Total Shipped Value ($)": alloc_qty * float(r.supplier_unit_price)
                 })
 
             alloc_df = pd.DataFrame(allocation_data)
+            
             edited_alloc = st.data_editor(
                 alloc_df,
-                disabled=["Item ID", "Product Code", "Total Ordered", "Already Shipped", "Remaining Balance"],
+                disabled=[
+                    "Seq #", "Item ID", "Category", "Model / Product", "Type", 
+                    "Ordered Qty", "Unit Price ($)", "Qty Shipped Already", 
+                    "Balance to Ship", "Total Shipped Value ($)"
+                ],
                 column_config={
-                    "Ship Quantity": st.column_config.NumberColumn("Ship Quantity", min_value=0.0)
+                    "Item ID": None,  # Hide internal Database Key
+                    "Seq #": st.column_config.NumberColumn("Seq #", format="%d"),
+                    "Current Ship Qty": st.column_config.NumberColumn("Current Ship Qty (Editable)", min_value=0.0),
+                    "Total Shipped Value ($)": st.column_config.NumberColumn("Total Shipped Value ($)", format="$%.2f")
                 },
                 use_container_width=True
             )
@@ -550,7 +640,7 @@ elif choice == "Shipments & Task Manager":
                         shipment_id = cur.fetchone()[0]
 
                         for _, row in edited_alloc.iterrows():
-                            ship_qty = row["Ship Quantity"]
+                            ship_qty = row["Current Ship Qty"]
                             item_id = int(row["Item ID"])
                             if ship_qty > 0:
                                 cur.execute("""
@@ -667,35 +757,41 @@ elif choice == "Settings & Product Catalog":
     with tab1:
         st.markdown("#### 📦 Product Catalog Management")
         conn = get_db_connection()
-        p_df = pd.read_sql_query("SELECT DISTINCT * FROM product_catalog", conn)
+        p_df = pd.read_sql_query("SELECT DISTINCT product_id, bu_id, brand_manuf, category, model_code, description FROM product_catalog ORDER BY bu_id, model_code", conn)
         conn.close()
         st.dataframe(p_df, use_container_width=True)
 
         st.markdown("##### Add New Product to Catalog")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            m_code = st.text_input("Model Code")
-        with col2:
-            m_desc = st.text_input("Description")
-        with col3:
-            m_cat = st.text_input("Category")
-        with col4:
-            m_price = st.number_input("Standard Unit Price", min_value=0.0)
+        bu_list = get_ref_list("BU")
+        brand_list = get_ref_list("Brand/Manuf.")
+        cat_list = get_ref_list("Category")
+
+        c_p1, c_p2, c_p3, c_p4 = st.columns(4)
+        with c_p1:
+            p_bu = st.selectbox("Business Unit (BU)", bu_list if bu_list else ["Default BU"])
+        with c_p2:
+            p_brand = st.selectbox("Brand / Manufacturer", brand_list if brand_list else ["Default Brand"])
+        with c_p3:
+            p_cat = st.selectbox("Category", cat_list if cat_list else ["Default Category"])
+        with c_p4:
+            p_model = st.text_input("Model / Product Code *")
+
+        p_desc = st.text_input("Description")
 
         if st.button("Add Product"):
-            if m_code:
+            if p_model:
                 conn = get_db_connection()
                 cur = conn.cursor()
                 try:
                     cur.execute(
                         """
-                        INSERT INTO product_catalog (model_code, description, category, standard_unit_price)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO product_catalog (bu_id, brand_manuf, category, model_code, description)
+                        VALUES (%s, %s, %s, %s, %s)
                     """,
-                        (m_code, m_desc, m_cat, m_price),
+                        (p_bu, p_brand, p_cat, p_model, p_desc),
                     )
                     conn.commit()
-                    st.success(f"Product '{m_code}' added successfully!")
+                    st.success(f"Product '{p_model}' added successfully!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error adding product: {e}")
@@ -703,11 +799,23 @@ elif choice == "Settings & Product Catalog":
                     conn.close()
 
     with tab2:
+        st.markdown("#### Reference Lists Management")
+        
+        # Categorized Groupings
+        internal_defs = ["BU", "Off Shore Companies", "Consignee"]
+        commercial_refs = [
+            "Div", "Supplier", "Brand/Manuf.", "Approval Type", 
+            "Payment Terms", "INCOTERM", "ORIGINs", "Category", 
+            "Type", "CURRENCY", "Mode of Shipment", "Shipping Lines", 
+            "Forwarders", "Sender Banks", "Receiving Banks", "Tenor"
+        ]
+
+        group_choice = st.radio("Reference Group", ["Internal Definitions", "Commercial / Operational References"], horizontal=True)
+        active_cats = internal_defs if group_choice == "Internal Definitions" else commercial_refs
+
         col1, col2 = st.columns(2)
         with col1:
-            cat_choice = st.selectbox(
-                "Select Category", ["BU", "Supplier", "Currency", "Incoterm", "Approval"]
-            )
+            cat_choice = st.selectbox("Select Category Header", active_cats)
             new_val = st.text_input(f"Add New Entry to {cat_choice}")
             if st.button("Add Reference Item"):
                 add_ref_item(cat_choice, new_val)
