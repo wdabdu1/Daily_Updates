@@ -24,7 +24,7 @@ def init_db(force_drop=False):
 
     if force_drop:
         c.execute(
-            "DROP TABLE IF EXISTS audit_logs, financial_ledger, shipment_tasks, shipment_contents, shipments, order_items, product_catalog, master_orders, users, holiday_calendar, task_definitions, ref_lists, currency_rates CASCADE;"
+            "DROP TABLE IF EXISTS financial_ledger, shipment_tasks, shipment_contents, shipments, order_items, product_catalog, master_orders, users, task_definitions, ref_lists, currency_rates CASCADE;"
         )
 
     # 1. Users Table
@@ -132,13 +132,25 @@ def init_db(force_drop=False):
                     sla_days INT DEFAULT 2,
                     completed_at TIMESTAMP WITH TIME ZONE)""")
 
-    # Safe schema migration checks for existing tables
+    # 10. Financial Expense Ledger Table (NEW)
+    c.execute("""CREATE TABLE IF NOT EXISTS financial_ledger (
+                    expense_id SERIAL PRIMARY KEY,
+                    shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
+                    expense_category VARCHAR(100),
+                    description TEXT,
+                    amount NUMERIC(15, 2),
+                    currency VARCHAR(20),
+                    payment_date DATE,
+                    ref_number VARCHAR(100),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)""")
+
+    # Safe schema migration checks
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS start_date DATE;")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS completion_date DATE;")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS ref_number VARCHAR(100);")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS sla_days INT DEFAULT 2;")
 
-    # 10. Currency Rates Table
+    # 11. Currency Rates Table
     c.execute("""CREATE TABLE IF NOT EXISTS currency_rates (
                     currency VARCHAR(20) PRIMARY KEY,
                     rate_to_usd NUMERIC(15, 6) DEFAULT 1.0,
@@ -195,6 +207,14 @@ def init_db(force_drop=False):
             ("Sender Banks", "HSBC NY"),
             ("Receiving Banks", "Standard Chartered"),
             ("Tenor", "90 Days"),
+            ("Expense Category", "Customs Duty"),
+            ("Expense Category", "SSMO & Inspection Fees"),
+            ("Expense Category", "Demurrage & Storage"),
+            ("Expense Category", "Freight Charges"),
+            ("Expense Category", "Clearance Agent Fees"),
+            ("Expense Category", "Inland Transport"),
+            ("Expense Category", "Insurance"),
+            ("Expense Category", "Handling & Miscellaneous"),
         ]
         for r in seed_ref:
             c.execute(
@@ -315,6 +335,7 @@ menu = [
     "Master Orders Dashboard",
     "Create Master Order",
     "Shipments & Task Manager",
+    "Landed Cost & Expense Ledger",
 ]
 if st.session_state["role"] == "Admin":
     menu.append("Settings & Product Catalog")
@@ -982,7 +1003,228 @@ elif choice == "Shipments & Task Manager":
 
                 previous_completed = (status == "Completed")
 
-# --- 4. SETTINGS & PRODUCT CATALOG ---
+# --- 4. LANDED COST & EXPENSE LEDGER (NEW) ---
+elif choice == "Landed Cost & Expense Ledger":
+    st.subheader("🧮 Landed Cost & Clearance Expense Ledger")
+    fx_rates = get_fx_rates()
+
+    conn = get_db_connection()
+    shipments_df = pd.read_sql_query("""
+        SELECT s.shipment_id, s.shipment_ref, s.bl_awb, s.eta, s.status, mo.po_number, mo.currency AS po_currency
+        FROM shipments s
+        JOIN master_orders mo ON s.order_id = mo.order_id
+        ORDER BY s.shipment_id DESC
+    """, conn)
+    conn.close()
+
+    if shipments_df.empty:
+        st.info("No shipments available. Create a shipment first under 'Shipments & Task Manager'.")
+    else:
+        shipments_df["display_label"] = shipments_df["bl_awb"] + " (PO: " + shipments_df["po_number"] + ")"
+        selected_label = st.selectbox("Select Shipment / BL to Manage Expenses", shipments_df["display_label"].tolist())
+        shp_row = shipments_df[shipments_df["display_label"] == selected_label].iloc[0]
+        shp_id = int(shp_row["shipment_id"])
+
+        # Fetch Shipment Line Items and Baseline Values
+        conn = get_db_connection()
+        items_df = pd.read_sql_query("""
+            SELECT sc.content_id, sc.item_id, oi.model_product, sc.shipped_qty, 
+                   oi.supplier_unit_price, mo.currency
+            FROM shipment_contents sc
+            JOIN order_items oi ON sc.item_id = oi.item_id
+            JOIN master_orders mo ON oi.order_id = mo.order_id
+            WHERE sc.shipment_id = %s
+        """, conn, params=(shp_id,))
+
+        # Fetch Logged Expenses for Shipment
+        exp_df = pd.read_sql_query("""
+            SELECT expense_id, expense_category, ref_number, amount, currency, payment_date, description
+            FROM financial_ledger
+            WHERE shipment_id = %s
+            ORDER BY payment_date DESC, expense_id DESC
+        """, conn, params=(shp_id,))
+        conn.close()
+
+        # Calculate Total Expenses in USD
+        total_exp_usd = 0.0
+        exp_table_data = []
+        for _, erow in exp_df.iterrows():
+            ecurr = erow["currency"] if erow["currency"] in fx_rates else "USD"
+            erate = float(fx_rates.get(ecurr, 1.0))
+            erate = erate if erate > 0 else 1.0
+            e_usd = float(erow["amount"]) / erate
+            total_exp_usd += e_usd
+
+            exp_table_data.append({
+                "Expense ID": erow["expense_id"],
+                "Category": erow["expense_category"],
+                "Ref / Receipt #": erow["ref_number"] if erow["ref_number"] else "N/A",
+                "Amount": float(erow["amount"]),
+                "Currency": ecurr,
+                "Amount ($)": e_usd,
+                "Payment Date": erow["payment_date"],
+                "Notes": erow["description"] if erow["description"] else ""
+            })
+
+        # Calculate Base FOB Line Values in USD
+        total_fob_usd = 0.0
+        line_calc_temp = []
+        for _, irow in items_df.iterrows():
+            sqty = float(irow["shipped_qty"])
+            sprice = float(irow["supplier_unit_price"])
+            pcurr = irow["currency"] if irow["currency"] in fx_rates else "USD"
+            prate = float(fx_rates.get(pcurr, 1.0))
+            prate = prate if prate > 0 else 1.0
+
+            base_unit_usd = sprice / prate
+            line_fob_usd = sqty * base_unit_usd
+            total_fob_usd += line_fob_usd
+            line_calc_temp.append({
+                "item_id": irow["item_id"],
+                "model_product": irow["model_product"],
+                "qty": sqty,
+                "price": sprice,
+                "currency": pcurr,
+                "base_unit_usd": base_unit_usd,
+                "line_fob_usd": line_fob_usd
+            })
+
+        total_landed_usd = total_fob_usd + total_exp_usd
+        exp_ratio = (total_exp_usd / total_fob_usd * 100) if total_fob_usd > 0 else 0.0
+
+        # High level summary KPIs
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Base FOB Value ($)", f"${total_fob_usd:,.2f}")
+        k2.metric("Total Clearance Expenses ($)", f"${total_exp_usd:,.2f}")
+        k3.metric("Expense Overhead %", f"{exp_ratio:.2f}%")
+        k4.metric("True Landed Shipment Value ($)", f"${total_landed_usd:,.2f}")
+
+        st.markdown("---")
+
+        exp_tab1, exp_tab2 = st.tabs(["🧾 Clearance Expense Ledger", "📊 True Landed Cost Breakdown"])
+
+        # TAB 1: LOG & EDIT EXPENSES
+        with exp_tab1:
+            st.markdown("#### Log New Clearance Expense")
+            categories = get_ref_list("Expense Category")
+            if not categories:
+                categories = ["Customs Duty", "SSMO & Inspection Fees", "Demurrage & Storage", "Freight Charges", "Clearance Agent Fees", "Inland Transport", "Insurance", "Handling & Miscellaneous"]
+
+            curr_list = get_ref_list("CURRENCY")
+            if not curr_list:
+                curr_list = ["USD", "EUR", "SDG"]
+
+            ec1, ec2, ec3 = st.columns(3)
+            with ec1:
+                e_cat = st.selectbox("Expense Category *", categories)
+                e_ref = st.text_input("Receipt / Payment Ref #")
+            with ec2:
+                e_amt = st.number_input("Amount *", min_value=0.0, format="%.2f")
+                e_curr = st.selectbox("Currency", curr_list)
+            with ec3:
+                e_date = st.date_input("Payment Date", value=date.today())
+                e_desc = st.text_input("Description / Remarks")
+
+            if st.button("➕ Add Expense to Ledger", type="primary"):
+                if e_amt <= 0:
+                    st.error("Expense amount must be greater than zero.")
+                else:
+                    try:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute("""
+                            INSERT INTO financial_ledger (shipment_id, expense_category, description, amount, currency, payment_date, ref_number)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s);
+                        """, (shp_id, e_cat, e_desc, e_amt, e_curr, e_date, e_ref))
+                        conn.commit()
+                        conn.close()
+                        st.success("Expense logged successfully!")
+                        st.rerun()
+                    except Exception as e_err:
+                        st.error(f"Failed to log expense: {e_err}")
+
+            st.markdown("---")
+            st.markdown("#### Logged Shipment Expenses")
+            
+            if not exp_table_data:
+                st.info("No clearance expenses logged for this shipment yet.")
+            else:
+                exp_ledger_df = pd.DataFrame(exp_table_data)
+                
+                # Show ledger with delete options
+                for idx, exp_row in exp_ledger_df.iterrows():
+                    l_c1, l_c2, l_c3, l_c4, l_c5, l_c6 = st.columns([2, 2, 1.5, 1.5, 2, 1])
+                    l_c1.write(f"**{exp_row['Category']}**")
+                    l_c2.write(f"Ref: `{exp_row['Ref / Receipt #']}`")
+                    l_c3.write(f"{exp_row['Amount']:,.2f} {exp_row['Currency']}")
+                    l_c4.write(f"**${exp_row['Amount ($)']:,.2f}**")
+                    l_c5.write(f"📅 {exp_row['Payment Date']}")
+                    if l_c6.button("🗑️", key=f"del_exp_{exp_row['Expense ID']}"):
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM financial_ledger WHERE expense_id = %s", (exp_row['Expense ID'],))
+                        conn.commit()
+                        conn.close()
+                        st.success("Expense removed.")
+                        st.rerun()
+
+        # TAB 2: TRUE LANDED COST BREAKDOWN PER ITEM
+        with exp_tab2:
+            st.markdown("#### True Landed Cost Allocation per Unit")
+            st.caption("Expenses are allocated proportionally based on each item's share of total shipment FOB value.")
+
+            if not line_calc_temp:
+                st.info("No items found in this shipment.")
+            else:
+                final_landed_rows = []
+                for idx, item in enumerate(line_calc_temp, start=1):
+                    q = item["qty"]
+                    fob_val_usd = item["line_fob_usd"]
+                    base_unit_usd = item["base_unit_usd"]
+
+                    if total_fob_usd > 0:
+                        alloc_share = fob_val_usd / total_fob_usd
+                    else:
+                        alloc_share = 1.0 / len(line_calc_temp)
+
+                    alloc_exp_line_usd = total_exp_usd * alloc_share
+                    alloc_exp_unit_usd = alloc_exp_line_usd / q if q > 0 else 0.0
+                    landed_unit_usd = base_unit_usd + alloc_exp_unit_usd
+                    total_landed_line_usd = landed_unit_usd * q
+                    uplift = (alloc_exp_unit_usd / base_unit_usd * 100) if base_unit_usd > 0 else 0.0
+
+                    final_landed_rows.append({
+                        "#": idx,
+                        "Model / Product": item["model_product"],
+                        "Shipped Qty": q,
+                        "Base PO Price": item["price"],
+                        "Currency": item["currency"],
+                        "Base Unit ($)": base_unit_usd,
+                        "Allocated Exp ($)": alloc_exp_line_usd,
+                        "Landed Unit Cost ($)": landed_unit_usd,
+                        "Total Landed Value ($)": total_landed_line_usd,
+                        "Uplift %": uplift
+                    })
+
+                landed_df = pd.DataFrame(final_landed_rows)
+
+                st.dataframe(
+                    landed_df,
+                    column_config={
+                        "#": st.column_config.NumberColumn("#", format="%d"),
+                        "Shipped Qty": st.column_config.NumberColumn("Shipped Qty", format="%,.2f"),
+                        "Base PO Price": st.column_config.NumberColumn("Base PO Price", format="%,.2f"),
+                        "Base Unit ($)": st.column_config.NumberColumn("Base Unit ($)", format="$%,.2f"),
+                        "Allocated Exp ($)": st.column_config.NumberColumn("Allocated Exp ($)", format="$%,.2f"),
+                        "Landed Unit Cost ($)": st.column_config.NumberColumn("Landed Unit Cost ($)", format="$%,.2f"),
+                        "Total Landed Value ($)": st.column_config.NumberColumn("Total Landed Value ($)", format="$%,.2f"),
+                        "Uplift %": st.column_config.NumberColumn("Uplift %", format="%.2f%%"),
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+# --- 5. SETTINGS & PRODUCT CATALOG ---
 elif choice == "Settings & Product Catalog":
     st.subheader("⚙️ Control Settings & Product Catalog")
 
@@ -1050,7 +1292,7 @@ elif choice == "Settings & Product Catalog":
             "Div", "Supplier", "Brand/Manuf.", "Approval Type", 
             "Payment Terms", "INCOTERM", "ORIGINs", "Category", 
             "Type", "CURRENCY", "Mode of Shipment", "Shipping Lines", 
-            "Forwarders", "Sender Banks", "Receiving Banks", "Tenor"
+            "Forwarders", "Sender Banks", "Receiving Banks", "Tenor", "Expense Category"
         ]
 
         group_choice = st.radio("Reference Group", ["Internal Definitions", "Commercial / Operational References"], horizontal=True)
