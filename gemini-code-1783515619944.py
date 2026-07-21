@@ -144,12 +144,21 @@ def init_db(force_drop=False):
                     ref_number VARCHAR(100),
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)""")
 
-    # Safe schema migration checks
+    # Dynamic schema migration checks
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS start_date DATE;")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS completion_date DATE;")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS ref_number VARCHAR(100);")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS sla_days INT DEFAULT 2;")
     c.execute("ALTER TABLE shipment_contents ADD COLUMN IF NOT EXISTS content_id SERIAL;")
+
+    c.execute("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS expense_id SERIAL;")
+    c.execute("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS shipment_id INTEGER;")
+    c.execute("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS expense_category VARCHAR(100);")
+    c.execute("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS description TEXT;")
+    c.execute("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS amount NUMERIC(15, 2);")
+    c.execute("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS currency VARCHAR(20);")
+    c.execute("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS payment_date DATE;")
+    c.execute("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS ref_number VARCHAR(100);")
 
     # 11. Currency Rates Table
     c.execute("""CREATE TABLE IF NOT EXISTS currency_rates (
