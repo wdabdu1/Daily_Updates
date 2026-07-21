@@ -3,9 +3,9 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-# Set Streamlit Page Configuration
+# --- STREAMLIT PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="Supply Chain & Clearance Control Tower",
+    page_title="Clearance & SLA Control Tower",
     page_icon="📦",
     layout="wide",
 )
@@ -23,6 +23,7 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
 
+    # Master orders table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS master_orders (
             order_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,6 +32,7 @@ def init_db():
         )
     """)
 
+    # Shipments table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shipments (
             shipment_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,13 +41,11 @@ def init_db():
             shipment_ref TEXT,
             origin TEXT,
             destination TEXT,
-            fob_value REAL,
-            freight_cost REAL,
-            insurance_cost REAL,
             FOREIGN KEY(order_id) REFERENCES master_orders(order_id)
         )
     """)
 
+    # Clearance tasks / process execution table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shipment_tasks (
             task_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +62,7 @@ def init_db():
         )
     """)
 
-    # Seed data if database is empty
+    # Seed data if empty
     cursor.execute("SELECT COUNT(*) FROM master_orders")
     if cursor.fetchone()[0] == 0:
         cursor.execute(
@@ -76,19 +76,18 @@ def init_db():
 
         cursor.execute(
             "INSERT INTO shipments (order_id, bl_awb, shipment_ref, origin,"
-            " destination, fob_value, freight_cost, insurance_cost) VALUES (1,"
-            " 'BL-123456789', 'SHP-2026-001', 'Shanghai, CN', 'Port Sudan, SD',"
-            " 45000.0, 3200.0, 450.0)"
+            " destination) VALUES (1, 'BL-123456789', 'SHP-2026-001',"
+            " 'Shanghai, CN', 'Port Sudan, SD')"
         )
         cursor.execute(
             "INSERT INTO shipments (order_id, bl_awb, shipment_ref, origin,"
-            " destination, fob_value, freight_cost, insurance_cost) VALUES (2,"
-            " 'AWB-987654321', 'SHP-2026-002', 'Dubai, AE', 'Khartoum, SD',"
-            " 28000.0, 1800.0, 280.0)"
+            " destination) VALUES (2, 'AWB-987654321', 'SHP-2026-002', 'Dubai,"
+            " AE', 'Khartoum, SD')"
         )
 
         today = date.today()
 
+        # Shipment 1 Tasks
         tasks_shp1 = [
             (
                 1,
@@ -136,6 +135,7 @@ def init_db():
             ),
         ]
 
+        # Shipment 2 Tasks
         tasks_shp2 = [
             (
                 2,
@@ -189,11 +189,7 @@ init_db()
 
 # --- 2. NAVIGATION SIDEBAR ---
 st.sidebar.title("🚢 Control Tower Navigation")
-menu = [
-    "Dashboard Overview",
-    "Landed Cost Calculator",
-    "Clearance Bottleneck & SLA Analytics",
-]
+menu = ["Dashboard Overview", "Clearance Bottleneck & SLA Analytics"]
 choice = st.sidebar.selectbox("Select Module", menu)
 
 
@@ -201,14 +197,13 @@ choice = st.sidebar.selectbox("Select Module", menu)
 if choice == "Dashboard Overview":
     st.title("📌 Dashboard Overview")
     st.write(
-        "Welcome to your integrated Logistics, Landed Cost, and Clearance"
-        " Control Tower."
+        "Welcome to your integrated Clearance & SLA Bottleneck Control Tower."
     )
 
     conn = get_db_connection()
     shipments_df = pd.read_sql_query(
         """
-        SELECT s.shipment_ref, s.bl_awb, mo.po_number, mo.bu_id, s.origin, s.destination, s.fob_value
+        SELECT s.shipment_ref, s.bl_awb, mo.po_number, mo.bu_id, s.origin, s.destination
         FROM shipments s
         JOIN master_orders mo ON s.order_id = mo.order_id
     """,
@@ -216,384 +211,341 @@ if choice == "Dashboard Overview":
     )
     conn.close()
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     col1.metric("Total Active Shipments", len(shipments_df))
-    col2.metric(
-        "Total Portfolio FOB Value", f"${shipments_df['fob_value'].sum():,.2f}"
-    )
-    col3.metric("Active Operating BUs", shipments_df["bu_id"].nunique())
+    col2.metric("Active Operating BUs", shipments_df["bu_id"].nunique())
 
     st.markdown("---")
     st.markdown("### 📦 Active Shipments Summary")
     st.dataframe(shipments_df, use_container_width=True, hide_index=True)
 
 
-# --- 4. MODULE: LANDED COST CALCULATOR ---
-elif choice == "Landed Cost Calculator":
-    st.title("💰 Landed Cost Calculator")
-    st.write(
-        "Calculate complete landed cost breakdowns per shipment including CIF"
-        " value, duties, taxes, and port handling charges."
-    )
-
-    conn = get_db_connection()
-    shipments_df = pd.read_sql_query(
-        "SELECT shipment_id, shipment_ref, bl_awb, fob_value, freight_cost,"
-        " insurance_cost FROM shipments",
-        conn,
-    )
-    conn.close()
-
-    selected_ref = st.selectbox(
-        "Select Shipment to Calculate",
-        options=shipments_df["shipment_ref"].tolist(),
-    )
-    shipment_data = shipments_df[
-        shipments_df["shipment_ref"] == selected_ref
-    ].iloc[0]
-
-    st.markdown("#### 1. Base Commercial Values")
-    c1, c2, c3, c4 = st.columns(4)
-    fob = c1.number_input(
-        "FOB Value ($)",
-        value=float(shipment_data["fob_value"]),
-        step=500.0,
-    )
-    freight = c2.number_input(
-        "Freight Cost ($)",
-        value=float(shipment_data["freight_cost"]),
-        step=100.0,
-    )
-    insurance = c3.number_input(
-        "Insurance Cost ($)",
-        value=float(shipment_data["insurance_cost"]),
-        step=50.0,
-    )
-    quantity = c4.number_input(
-        "Shipment Units / Quantity", value=1000, step=50
-    )
-
-    cif_value = fob + freight + insurance
-    st.info(f"**Calculated CIF Value:** ${cif_value:,.2f}")
-
-    st.markdown("#### 2. Duty, Tax & Clearing Overhead Inputs")
-    col_a, col_b, col_c, col_d = st.columns(4)
-    duty_rate = (
-        col_a.number_input("Customs Duty Rate (%)", value=10.0, step=0.5) / 100.0
-    )
-    vat_rate = col_b.number_input("VAT Rate (%)", value=15.0, step=0.5) / 100.0
-    port_fees = col_c.number_input("Port & Demurrage Fees ($)", value=750.0)
-    misc_fees = col_d.number_input("Clearance & Agency Fees ($)", value=450.0)
-
-    # Landed Cost Calculation logic
-    duty_amount = cif_value * duty_rate
-    taxable_vat_base = cif_value + duty_amount
-    vat_amount = taxable_vat_base * vat_rate
-    total_landed_cost = (
-        cif_value + duty_amount + vat_amount + port_fees + misc_fees
-    )
-    unit_landed_cost = (
-        total_landed_cost / quantity if quantity > 0 else total_landed_cost
-    )
-
-    st.markdown("---")
-    st.markdown("### 📊 Landed Cost Breakdown")
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Landed Cost", f"${total_landed_cost:,.2f}")
-    m2.metric("Unit Landed Cost", f"${unit_landed_cost:,.2f} / unit")
-    m3.metric("Customs Duties & VAT", f"${duty_amount + vat_amount:,.2f}")
-    m4.metric(
-        "Landed Cost Multiplier", f"{(total_landed_cost / fob):.2f}x FOB"
-    )
-
-    cost_data = {
-        "Cost Component": [
-            "FOB Goods Value",
-            "Freight",
-            "Insurance",
-            "Customs Duty",
-            "VAT",
-            "Port & Handling Fees",
-            "Clearance & Agency Fees",
-            "TOTAL LANDED COST",
-        ],
-        "Amount ($)": [
-            fob,
-            freight,
-            insurance,
-            duty_amount,
-            vat_amount,
-            port_fees,
-            misc_fees,
-            total_landed_cost,
-        ],
-        "% of Total": [
-            (fob / total_landed_cost) * 100,
-            (freight / total_landed_cost) * 100,
-            (insurance / total_landed_cost) * 100,
-            (duty_amount / total_landed_cost) * 100,
-            (vat_amount / total_landed_cost) * 100,
-            (port_fees / total_landed_cost) * 100,
-            (misc_fees / total_landed_cost) * 100,
-            100.0,
-        ],
-    }
-
-    cost_df = pd.DataFrame(cost_data)
-    st.dataframe(
-        cost_df,
-        column_config={
-            "Amount ($)": st.column_config.NumberColumn(format="$%.2f"),
-            "% of Total": st.column_config.NumberColumn(format="%.1f%%"),
-        },
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-# --- 5. MODULE: CLEARANCE BOTTLENECK & SLA ANALYTICS ---
+# --- 4. MODULE: CLEARANCE BOTTLENECK & SLA ANALYTICS ---
 elif choice == "Clearance Bottleneck & SLA Analytics":
     st.title("📊 Clearance Bottleneck & SLA Analytics")
 
-    conn = get_db_connection()
-
-    tasks_analytics_df = pd.read_sql_query(
-        """
-        SELECT 
-            st.task_id,
-            st.shipment_id,
-            s.bl_awb,
-            s.shipment_ref,
-            mo.po_number,
-            mo.bu_id,
-            st.step_order,
-            st.task_name,
-            st.department,
-            st.status,
-            st.sla_days,
-            st.start_date,
-            st.completion_date,
-            st.ref_number
-        FROM shipment_tasks st
-        JOIN shipments s ON st.shipment_id = s.shipment_id
-        JOIN master_orders mo ON s.order_id = mo.order_id
-        ORDER BY st.shipment_id DESC, st.step_order ASC
-    """,
-        conn,
+    tab_analytics, tab_settings = st.tabs(
+        ["📈 Analytics & Bottlenecks", "⚙️ Manage SLA Targets"]
     )
 
-    conn.close()
+    # --- TAB 1: ANALYTICS DASHBOARD ---
+    with tab_analytics:
+        conn = get_db_connection()
 
-    if tasks_analytics_df.empty:
-        st.info("No clearance task data available yet to perform SLA analytics.")
-    else:
-        # Date parsing
-        tasks_analytics_df["start_date"] = pd.to_datetime(
-            tasks_analytics_df["start_date"]
-        ).dt.date
-        tasks_analytics_df["completion_date"] = pd.to_datetime(
-            tasks_analytics_df["completion_date"]
-        ).dt.date
-
-        today = date.today()
-
-        def compute_task_metrics(row):
-            status = row["status"]
-            sla = int(row["sla_days"]) if pd.notna(row["sla_days"]) else 2
-            st_date = row["start_date"]
-            comp_date = row["completion_date"]
-
-            days_taken = None
-            is_breached = False
-            delay_days = 0
-
-            if status == "Completed" and pd.notna(st_date) and pd.notna(comp_date):
-                days_taken = max(0, (comp_date - st_date).days)
-                if days_taken > sla:
-                    is_breached = True
-                    delay_days = days_taken - sla
-            elif status == "In Progress" and pd.notna(st_date):
-                days_taken = max(0, (today - st_date).days)
-                if days_taken > sla:
-                    is_breached = True
-                    delay_days = days_taken - sla
-
-            return pd.Series([days_taken, is_breached, delay_days])
-
-        tasks_analytics_df[["days_taken", "is_breached", "delay_days"]] = (
-            tasks_analytics_df.apply(compute_task_metrics, axis=1)
+        tasks_analytics_df = pd.read_sql_query(
+            """
+            SELECT 
+                st.task_id,
+                st.shipment_id,
+                s.bl_awb,
+                s.shipment_ref,
+                mo.po_number,
+                mo.bu_id,
+                st.step_order,
+                st.task_name,
+                st.department,
+                st.status,
+                st.sla_days,
+                st.start_date,
+                st.completion_date,
+                st.ref_number
+            FROM shipment_tasks st
+            JOIN shipments s ON st.shipment_id = s.shipment_id
+            JOIN master_orders mo ON s.order_id = mo.order_id
+            ORDER BY st.shipment_id DESC, st.step_order ASC
+        """,
+            conn,
         )
 
-        # Top level KPIs
-        completed_tasks = tasks_analytics_df[
-            tasks_analytics_df["status"] == "Completed"
-        ]
-        in_progress_tasks = tasks_analytics_df[
-            tasks_analytics_df["status"] == "In Progress"
-        ]
-        total_breaches = tasks_analytics_df["is_breached"].sum()
+        conn.close()
 
-        total_eval_tasks = len(completed_tasks) + len(in_progress_tasks)
-        sla_compliance_rate = (
-            ((total_eval_tasks - total_breaches) / total_eval_tasks * 100)
-            if total_eval_tasks > 0
-            else 100.0
-        )
-        avg_completion_time = (
-            completed_tasks["days_taken"].mean()
-            if not completed_tasks.empty
-            else 0.0
-        )
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Overall SLA Compliance Rate", f"{sla_compliance_rate:.1f}%")
-        m2.metric("Active Clearance Tasks", len(in_progress_tasks))
-        m3.metric(
-            "Total SLA Breaches",
-            int(total_breaches),
-            delta=f"-{total_breaches} Overdue" if total_breaches > 0 else "0",
-            delta_color="inverse",
-        )
-        m4.metric("Avg Step Duration", f"{avg_completion_time:.1f} Days")
-
-        st.markdown("---")
-        st.markdown("### 🏢 Bottleneck Analysis by Department")
-
-        dept_summary = (
-            tasks_analytics_df.groupby("department")
-            .agg(
-                total_tasks=("task_id", "count"),
-                active_tasks=("status", lambda x: (x == "In Progress").sum()),
-                completed_tasks=("status", lambda x: (x == "Completed").sum()),
-                breach_count=("is_breached", "sum"),
-                avg_days=("days_taken", "mean"),
-                avg_sla=("sla_days", "mean"),
+        if tasks_analytics_df.empty:
+            st.info(
+                "No clearance task data available yet to perform SLA"
+                " analytics."
             )
-            .reset_index()
-        )
+        else:
+            # Parse dates
+            tasks_analytics_df["start_date"] = pd.to_datetime(
+                tasks_analytics_df["start_date"]
+            ).dt.date
+            tasks_analytics_df["completion_date"] = pd.to_datetime(
+                tasks_analytics_df["completion_date"]
+            ).dt.date
 
-        dept_summary["Avg Delay (Days)"] = (
-            dept_summary["avg_days"] - dept_summary["avg_sla"]
-        ).clip(lower=0)
+            today = date.today()
 
-        st.dataframe(
-            dept_summary,
-            column_config={
-                "department": st.column_config.TextColumn("Department"),
-                "total_tasks": st.column_config.NumberColumn(
-                    "Total Tasks", format="%d"
-                ),
-                "active_tasks": st.column_config.NumberColumn(
-                    "In Progress", format="%d"
-                ),
-                "completed_tasks": st.column_config.NumberColumn(
-                    "Completed", format="%d"
-                ),
-                "breach_count": st.column_config.NumberColumn(
-                    "SLA Violations 🚨", format="%d"
-                ),
-                "avg_days": st.column_config.NumberColumn(
-                    "Avg Duration (Days)", format="%.1f"
-                ),
-                "avg_sla": st.column_config.NumberColumn(
-                    "Target SLA (Days)", format="%.1f"
-                ),
-                "Avg Delay (Days)": st.column_config.NumberColumn(
-                    "Avg Delay Overhead", format="%.1f days"
-                ),
-            },
-            use_container_width=True,
-            hide_index=True,
-        )
+            def compute_task_metrics(row):
+                status = row["status"]
+                sla = int(row["sla_days"]) if pd.notna(row["sla_days"]) else 2
+                st_date = row["start_date"]
+                comp_date = row["completion_date"]
 
-        st.markdown("---")
-        col_left, col_right = st.columns(2)
+                days_taken = None
+                is_breached = False
+                delay_days = 0
 
-        with col_left:
-            st.markdown("### ⏳ Slowest Clearance Steps")
-            step_summary = (
-                tasks_analytics_df.groupby(
-                    ["step_order", "task_name", "department"]
-                )
+                if (
+                    status == "Completed"
+                    and pd.notna(st_date)
+                    and pd.notna(comp_date)
+                ):
+                    days_taken = max(0, (comp_date - st_date).days)
+                    if days_taken > sla:
+                        is_breached = True
+                        delay_days = days_taken - sla
+                elif status == "In Progress" and pd.notna(st_date):
+                    days_taken = max(0, (today - st_date).days)
+                    if days_taken > sla:
+                        is_breached = True
+                        delay_days = days_taken - sla
+
+                return pd.Series([days_taken, is_breached, delay_days])
+
+            tasks_analytics_df[["days_taken", "is_breached", "delay_days"]] = (
+                tasks_analytics_df.apply(compute_task_metrics, axis=1)
+            )
+
+            # Metrics
+            completed_tasks = tasks_analytics_df[
+                tasks_analytics_df["status"] == "Completed"
+            ]
+            in_progress_tasks = tasks_analytics_df[
+                tasks_analytics_df["status"] == "In Progress"
+            ]
+            total_breaches = tasks_analytics_df["is_breached"].sum()
+
+            total_eval_tasks = len(completed_tasks) + len(in_progress_tasks)
+            sla_compliance_rate = (
+                ((total_eval_tasks - total_breaches) / total_eval_tasks * 100)
+                if total_eval_tasks > 0
+                else 100.0
+            )
+            avg_completion_time = (
+                completed_tasks["days_taken"].mean()
+                if not completed_tasks.empty
+                else 0.0
+            )
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric(
+                "Overall SLA Compliance Rate", f"{sla_compliance_rate:.1f}%"
+            )
+            m2.metric("Active Clearance Tasks", len(in_progress_tasks))
+            m3.metric(
+                "Total SLA Breaches",
+                int(total_breaches),
+                delta=f"-{total_breaches} Overdue"
+                if total_breaches > 0
+                else "0",
+                delta_color="inverse",
+            )
+            m4.metric("Avg Step Duration", f"{avg_completion_time:.1f} Days")
+
+            st.markdown("---")
+            st.markdown("### 🏢 Bottleneck Analysis by Department")
+
+            dept_summary = (
+                tasks_analytics_df.groupby("department")
                 .agg(
+                    total_tasks=("task_id", "count"),
+                    active_tasks=(
+                        "status",
+                        lambda x: (x == "In Progress").sum(),
+                    ),
+                    completed_tasks=(
+                        "status",
+                        lambda x: (x == "Completed").sum(),
+                    ),
+                    breach_count=("is_breached", "sum"),
                     avg_days=("days_taken", "mean"),
-                    target_sla=("sla_days", "first"),
-                    breaches=("is_breached", "sum"),
+                    avg_sla=("sla_days", "mean"),
                 )
                 .reset_index()
-                .sort_values(by="avg_days", ascending=False)
             )
 
-            step_summary.rename(
-                columns={
-                    "step_order": "Step",
-                    "task_name": "Task Name",
-                    "department": "Department",
-                    "avg_days": "Avg Days Taken",
-                    "target_sla": "Target SLA",
-                    "breaches": "Breaches",
-                },
-                inplace=True,
-            )
+            dept_summary["Avg Delay (Days)"] = (
+                dept_summary["avg_days"] - dept_summary["avg_sla"]
+            ).clip(lower=0)
 
             st.dataframe(
-                step_summary,
+                dept_summary,
                 column_config={
-                    "Step": st.column_config.NumberColumn("Step", format="%d"),
-                    "Avg Days Taken": st.column_config.NumberColumn(
-                        "Avg Duration", format="%.1f d"
+                    "department": st.column_config.TextColumn("Department"),
+                    "total_tasks": st.column_config.NumberColumn(
+                        "Total Tasks", format="%d"
                     ),
-                    "Target SLA": st.column_config.NumberColumn(
-                        "Target SLA", format="%d d"
+                    "active_tasks": st.column_config.NumberColumn(
+                        "In Progress", format="%d"
                     ),
-                    "Breaches": st.column_config.NumberColumn(
-                        "Breaches 🚨", format="%d"
+                    "completed_tasks": st.column_config.NumberColumn(
+                        "Completed", format="%d"
+                    ),
+                    "breach_count": st.column_config.NumberColumn(
+                        "SLA Violations 🚨", format="%d"
+                    ),
+                    "avg_days": st.column_config.NumberColumn(
+                        "Avg Duration (Days)", format="%.1f"
+                    ),
+                    "avg_sla": st.column_config.NumberColumn(
+                        "Target SLA (Days)", format="%.1f"
+                    ),
+                    "Avg Delay (Days)": st.column_config.NumberColumn(
+                        "Avg Delay Overhead", format="%.1f days"
                     ),
                 },
                 use_container_width=True,
                 hide_index=True,
             )
 
-        with col_right:
-            st.markdown("### 🚨 Active SLA Violations / Overdue Steps")
-            overdue_df = tasks_analytics_df[
-                (tasks_analytics_df["is_breached"] == True)
-                & (tasks_analytics_df["status"] == "In Progress")
-            ].copy()
+            st.markdown("---")
+            col_left, col_right = st.columns(2)
 
-            if overdue_df.empty:
-                st.success(
-                    "🎉 No active SLA violations! All in-progress clearance"
-                    " tasks are on track."
+            with col_left:
+                st.markdown("### ⏳ Slowest Clearance Steps")
+                step_summary = (
+                    tasks_analytics_df.groupby(
+                        ["step_order", "task_name", "department"]
+                    )
+                    .agg(
+                        avg_days=("days_taken", "mean"),
+                        target_sla=("sla_days", "first"),
+                        breaches=("is_breached", "sum"),
+                    )
+                    .reset_index()
+                    .sort_values(by="avg_days", ascending=False)
                 )
-            else:
-                overdue_view = overdue_df[
-                    [
-                        "bl_awb",
-                        "po_number",
-                        "task_name",
-                        "department",
-                        "delay_days",
-                        "start_date",
-                    ]
-                ].copy()
-                overdue_view.columns = [
-                    "BL / AWB",
-                    "PO Number",
-                    "Stuck Task",
-                    "Department",
-                    "Days Overdue",
-                    "Started On",
-                ]
+
+                step_summary.rename(
+                    columns={
+                        "step_order": "Step",
+                        "task_name": "Task Name",
+                        "department": "Department",
+                        "avg_days": "Avg Days Taken",
+                        "target_sla": "Target SLA",
+                        "breaches": "Breaches",
+                    },
+                    inplace=True,
+                )
 
                 st.dataframe(
-                    overdue_view,
+                    step_summary,
                     column_config={
-                        "Days Overdue": st.column_config.NumberColumn(
-                            "Days Overdue 🚨", format="%d days"
+                        "Step": st.column_config.NumberColumn(
+                            "Step", format="%d"
+                        ),
+                        "Avg Days Taken": st.column_config.NumberColumn(
+                            "Avg Duration", format="%.1f d"
+                        ),
+                        "Target SLA": st.column_config.NumberColumn(
+                            "Target SLA", format="%d d"
+                        ),
+                        "Breaches": st.column_config.NumberColumn(
+                            "Breaches 🚨", format="%d"
                         ),
                     },
                     use_container_width=True,
                     hide_index=True,
                 )
+
+            with col_right:
+                st.markdown("### 🚨 Active SLA Violations / Overdue Steps")
+                overdue_df = tasks_analytics_df[
+                    (tasks_analytics_df["is_breached"] == True)
+                    & (tasks_analytics_df["status"] == "In Progress")
+                ].copy()
+
+                if overdue_df.empty:
+                    st.success(
+                        "🎉 No active SLA violations! All in-progress clearance"
+                        " tasks are on track."
+                    )
+                else:
+                    overdue_view = overdue_df[
+                        [
+                            "bl_awb",
+                            "po_number",
+                            "task_name",
+                            "department",
+                            "delay_days",
+                            "start_date",
+                        ]
+                    ].copy()
+                    overdue_view.columns = [
+                        "BL / AWB",
+                        "PO Number",
+                        "Stuck Task",
+                        "Department",
+                        "Days Overdue",
+                        "Started On",
+                    ]
+
+                    st.dataframe(
+                        overdue_view,
+                        column_config={
+                            "Days Overdue": st.column_config.NumberColumn(
+                                "Days Overdue 🚨", format="%d days"
+                            ),
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+    # --- TAB 2: EDIT PROCESS SLA TARGETS ---
+    with tab_settings:
+        st.markdown("### 🛠️ Configure & Edit Target SLA Durations")
+        st.write(
+            "Modify target SLA durations (in days) for standard clearance"
+            " steps. Performance monitoring calculations will automatically"
+            " adjust."
+        )
+
+        conn = get_db_connection()
+        distinct_steps_df = pd.read_sql_query(
+            "SELECT DISTINCT task_name, department, sla_days FROM"
+            " shipment_tasks",
+            conn,
+        )
+
+        if not distinct_steps_df.empty:
+            selected_task = st.selectbox(
+                "Select Clearance Step to Edit Target SLA",
+                options=distinct_steps_df["task_name"].tolist(),
+            )
+
+            current_row = distinct_steps_df[
+                distinct_steps_df["task_name"] == selected_task
+            ].iloc[0]
+
+            col_edit1, col_edit2 = st.columns(2)
+            col_edit1.text_input(
+                "Assigned Department",
+                value=current_row["department"],
+                disabled=True,
+            )
+            new_sla = col_edit2.number_input(
+                "Target SLA Duration (Days)",
+                value=int(current_row["sla_days"]),
+                min_value=1,
+                max_value=30,
+                step=1,
+            )
+
+            if st.button("💾 Save & Update SLA Target"):
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE shipment_tasks 
+                    SET sla_days = ? 
+                    WHERE task_name = ?
+                """,
+                    (new_sla, selected_task),
+                )
+                conn.commit()
+                st.success(
+                    f"Successfully updated SLA target for '{selected_task}' to"
+                    f" {new_sla} days!"
+                )
+                st.rerun()
+
+        conn.close()
