@@ -132,7 +132,7 @@ def init_db(force_drop=False):
                     sla_days INT DEFAULT 2,
                     completed_at TIMESTAMP WITH TIME ZONE)""")
 
-    # 10. Financial Expense Ledger Table (NEW)
+    # 10. Financial Expense Ledger Table
     c.execute("""CREATE TABLE IF NOT EXISTS financial_ledger (
                     expense_id SERIAL PRIMARY KEY,
                     shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
@@ -149,6 +149,7 @@ def init_db(force_drop=False):
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS completion_date DATE;")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS ref_number VARCHAR(100);")
     c.execute("ALTER TABLE shipment_tasks ADD COLUMN IF NOT EXISTS sla_days INT DEFAULT 2;")
+    c.execute("ALTER TABLE shipment_contents ADD COLUMN IF NOT EXISTS content_id SERIAL;")
 
     # 11. Currency Rates Table
     c.execute("""CREATE TABLE IF NOT EXISTS currency_rates (
@@ -1003,7 +1004,7 @@ elif choice == "Shipments & Task Manager":
 
                 previous_completed = (status == "Completed")
 
-# --- 4. LANDED COST & EXPENSE LEDGER (NEW) ---
+# --- 4. LANDED COST & EXPENSE LEDGER ---
 elif choice == "Landed Cost & Expense Ledger":
     st.subheader("🧮 Landed Cost & Clearance Expense Ledger")
     fx_rates = get_fx_rates()
@@ -1028,7 +1029,7 @@ elif choice == "Landed Cost & Expense Ledger":
         # Fetch Shipment Line Items and Baseline Values
         conn = get_db_connection()
         items_df = pd.read_sql_query("""
-            SELECT sc.content_id, sc.item_id, oi.model_product, sc.shipped_qty, 
+            SELECT sc.item_id, oi.model_product, sc.shipped_qty, 
                    oi.supplier_unit_price, mo.currency
             FROM shipment_contents sc
             JOIN order_items oi ON sc.item_id = oi.item_id
