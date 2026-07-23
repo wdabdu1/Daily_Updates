@@ -12,6 +12,28 @@ st.set_page_config(
 )
 
 
+# --- CURRENCY & NUMBER FORMATTING HELPERS ---
+def parse_amount(val) -> float:
+    """Parses numeric input (with or without commas/currency symbols) into a float."""
+    if val is None or val == "":
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    cleaned = (
+        str(val).replace(",", "").replace("SDG", "").replace("$", "").strip()
+    )
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
+def format_amount(val) -> str:
+    """Formats float/number into comma-separated currency string (e.g., 500,000.00)."""
+    num = parse_amount(val)
+    return f"{num:,.2f}"
+
+
 # --- 1. DATABASE CONNECTION & INITIALIZATION ---
 def get_db_connection():
     conn = sqlite3.connect("shipments.db", check_same_thread=False)
@@ -443,27 +465,37 @@ if choice == "📋 Clearance Task Engine":
                     st.markdown("---")
                     st.markdown("**6. Clearance Completion Estimate Date:**")
                     col_est1, col_est2 = st.columns(2)
-                    
+
                     with col_est1:
                         manual_override = st.checkbox(
                             "Manually Override Calculated Clearance Completion Estimate",
                             value=bool(shipment_data.get("manual_override_est_date")),
+                            key=f"manual_override_cb_{shipment_id}",
+                        )
+
+                    with col_est2:
+                        existing_est_date = shipment_data.get("est_clearance_date")
+                        if existing_est_date and shipment_data.get("manual_override_est_date"):
+                            default_date = pd.to_datetime(existing_est_date).date()
+                        else:
+                            default_date = calculated_completion_est
+
+                        manual_est_clear_date = st.date_input(
+                            "Select Manual Clearance Completion Estimate Date",
+                            value=default_date,
+                            disabled=not manual_override,
+                            key=f"manual_date_input_{shipment_id}",
+                            help="Check the override box on the left to manually select custom clearance estimate date.",
                         )
 
                     if manual_override:
-                        with col_est2:
-                            est_clear_date = st.date_input(
-                                "Select Manual Clearance Completion Estimate Date",
-                                value=pd.to_datetime(
-                                    shipment_data.get("est_clearance_date")
-                                ).date()
-                                if shipment_data.get("est_clearance_date")
-                                else calculated_completion_est,
-                            )
+                        est_clear_date = manual_est_clear_date
                     else:
                         est_clear_date = calculated_completion_est
-                        with col_est2:
-                            st.info(f"Calculated Target Date: **{calculated_completion_est}**")
+                        st.caption(
+                            f"ℹ️ Currently using auto-calculated target date:"
+                            f" **{calculated_completion_est.strftime('%Y-%m-%d')}**"
+                        )
 
                     notes = st.text_area(
                         "7. General Notes",
@@ -498,11 +530,12 @@ if choice == "📋 Clearance Task Engine":
                         if task_data.get("est_date")
                         else None,
                     )
-                    val = c2.number_input(
+                    val_raw = c2.text_input(
                         "2. Estimated Value (SDG)",
-                        value=float(task_data.get("value", 0.0)),
-                        format="%.2f",
+                        value=format_amount(task_data.get("value", 0.0)),
+                        help="Formatted currency field (e.g. 500,000.00)",
                     )
+                    val = parse_amount(val_raw)
 
                     c3, c4 = st.columns(2)
                     not_bu = c3.date_input(
@@ -540,11 +573,11 @@ if choice == "📋 Clearance Task Engine":
                         "1. Copy of DO Collected",
                         value=bool(task_data.get("copy_do")),
                     )
-                    do_fees = c2.number_input(
+                    do_fees_raw = c2.text_input(
                         "2. DO Fees (SDG)",
-                        value=float(task_data.get("do_fees", 0.0)),
-                        format="%.2f",
+                        value=format_amount(task_data.get("do_fees", 0.0)),
                     )
+                    do_fees = parse_amount(do_fees_raw)
 
                     c3, c4 = st.columns(2)
                     settle_d = c3.date_input(
@@ -601,11 +634,12 @@ if choice == "📋 Clearance Task Engine":
                         if task_data.get("request_date")
                         else None,
                     )
-                    bill = c2.number_input(
+                    bill_raw = c2.text_input(
                         "2. Bill Amount (SDG)",
-                        value=float(task_data.get("bill_amount", 0.0)),
-                        format="%.2f",
+                        value=format_amount(task_data.get("bill_amount", 0.0)),
                     )
+                    bill = parse_amount(bill_raw)
+
                     set_d = c3.date_input(
                         "3. Bill Settlement Date",
                         value=pd.to_datetime(
@@ -631,11 +665,12 @@ if choice == "📋 Clearance Task Engine":
                         if task_data.get("request_date")
                         else None,
                     )
-                    bill = c2.number_input(
+                    bill_raw = c2.text_input(
                         "2. Bill Amount (SDG)",
-                        value=float(task_data.get("bill_amount", 0.0)),
-                        format="%.2f",
+                        value=format_amount(task_data.get("bill_amount", 0.0)),
                     )
+                    bill = parse_amount(bill_raw)
+
                     set_d = c3.date_input(
                         "3. Bill Settlement Date",
                         value=pd.to_datetime(
@@ -686,12 +721,13 @@ if choice == "📋 Clearance Task Engine":
                     is_lab_yes = lab_req == "Yes"
 
                     c1, c2, c3 = st.columns(3)
-                    lab_fees = c1.number_input(
+                    lab_fees_raw = c1.text_input(
                         "2. Customs Lab Fees (SDG)",
-                        value=float(task_data.get("lab_fees", 0.0)),
+                        value=format_amount(task_data.get("lab_fees", 0.0)),
                         disabled=not is_lab_yes,
-                        format="%.2f",
                     )
+                    lab_fees = parse_amount(lab_fees_raw)
+
                     pay_d = c2.date_input(
                         "3. Fees Payment Date",
                         value=pd.to_datetime(
@@ -748,11 +784,11 @@ if choice == "📋 Clearance Task Engine":
                         if task_data.get("eval_date")
                         else None,
                     )
-                    cust_val = c2.number_input(
+                    cust_val_raw = c2.text_input(
                         "2. Customs Value (SDG)",
-                        value=float(task_data.get("customs_value", 0.0)),
-                        format="%.2f",
+                        value=format_amount(task_data.get("customs_value", 0.0)),
                     )
+                    cust_val = parse_amount(cust_val_raw)
 
                     c3, c4 = st.columns(2)
                     settle_d = c3.date_input(
@@ -794,11 +830,12 @@ if choice == "📋 Clearance Task Engine":
                         if task_data.get("request_date")
                         else None,
                     )
-                    spc_val = c2.number_input(
+                    spc_val_raw = c2.text_input(
                         "2. SPC Bill Value (SDG)",
-                        value=float(task_data.get("spc_bill_value", 0.0)),
-                        format="%.2f",
+                        value=format_amount(task_data.get("spc_bill_value", 0.0)),
                     )
+                    spc_val = parse_amount(spc_val_raw)
+
                     set_d = c3.date_input(
                         "3. SPC Bill Settlement Date",
                         value=pd.to_datetime(
@@ -911,11 +948,12 @@ if choice == "📋 Clearance Task Engine":
                         if task_data.get("request_date")
                         else None,
                     )
-                    spc_val = c2.number_input(
+                    spc_val_raw = c2.text_input(
                         "2. SPC Bill Value (SDG)",
-                        value=float(task_data.get("spc_bill_value", 0.0)),
-                        format="%.2f",
+                        value=format_amount(task_data.get("spc_bill_value", 0.0)),
                     )
+                    spc_val = parse_amount(spc_val_raw)
+
                     c3, c4 = st.columns(2)
                     set_d = c3.date_input(
                         "3. SPC Bill Settlement Date",
@@ -985,11 +1023,12 @@ if choice == "📋 Clearance Task Engine":
                         if task_data.get("completion_date")
                         else None,
                     )
-                    val = st.number_input(
+                    val_raw = st.text_input(
                         "Amount (SDG)",
-                        value=float(task_data.get("amount", 0.0)),
-                        format="%.2f",
+                        value=format_amount(task_data.get("amount", 0.0)),
                     )
+                    val = parse_amount(val_raw)
+
                     updated_data = {
                         "start_date": d1.isoformat() if d1 else None,
                         "completion_date": d2.isoformat() if d2 else None,
