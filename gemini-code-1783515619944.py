@@ -24,7 +24,7 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Master Shipments Table
+    # Re-create process_tasks table to align with updated schema
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shipments (
             shipment_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,7 +42,6 @@ def init_db():
         )
     """)
 
-    # Clearance Processes Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS process_tasks (
             task_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,12 +57,18 @@ def init_db():
         )
     """)
 
-    # Seed Sample Data if empty
-    cursor.execute("SELECT COUNT(*) FROM shipments")
+    # Check if database needs initial seeding or refreshed process keys
+    cursor.execute(
+        "SELECT COUNT(*) FROM process_tasks WHERE process_key ="
+        " 'final_clearance_complete'"
+    )
     if cursor.fetchone()[0] == 0:
+        cursor.execute("DELETE FROM process_tasks")
+        cursor.execute("DELETE FROM shipments")
+
         today = date.today()
 
-        # Seed Shipment 1
+        # Seed Shipment 1 (Port)
         cursor.execute(
             """
             INSERT INTO shipments (bl_awb, po_number, bu_id, est_arrival_date, act_arrival_date, clear_at, notes)
@@ -76,7 +81,7 @@ def init_db():
         )
         shp1_id = cursor.lastrowid
 
-        # Seed Shipment 2
+        # Seed Shipment 2 (Free Zone)
         cursor.execute(
             """
             INSERT INTO shipments (bl_awb, po_number, bu_id, est_arrival_date, clear_at, notes)
@@ -86,7 +91,6 @@ def init_db():
         )
         shp2_id = cursor.lastrowid
 
-        # Seed default tasks for both shipments
         seed_tasks_for_shipment(cursor, shp1_id)
         seed_tasks_for_shipment(cursor, shp2_id)
 
@@ -95,11 +99,10 @@ def init_db():
 
 
 def seed_tasks_for_shipment(cursor, shipment_id):
-    """Populates standard process definitions from user specification."""
+    """Populates updated standard process definitions."""
     default_processes = [
         # Common Processes
         ("gen_info", "General Clearance Info", "Common", 0.25),
-        ("clearance_complete", "Clearance Complete Date", "Common", 0.25),
         ("clear_at_select", "Clear at:", "Common", 0.25),
         ("cost_estimate", "Clearance Cost Estimate", "Common", 0.25),
         ("delivery_order", "Delivery Order", "Common", 1.0),
@@ -118,6 +121,13 @@ def seed_tasks_for_shipment(cursor, shipment_id):
         ("fz_customs_insp", "Customs Inspection (FZ)", "Free Zone", 1.0),
         ("fz_spc_police", "SPC Bill & Police Security", "Free Zone", 1.0),
         ("fz_receive_cargo", "Receive Cargo at FZ", "Free Zone", 1.0),
+        # Final Process (Common at the end)
+        (
+            "final_clearance_complete",
+            "Actual Clearance Completion",
+            "Common",
+            0.25,
+        ),
     ]
 
     for key, name, track, sla in default_processes:
@@ -135,7 +145,7 @@ init_db()
 
 # --- 2. WORKFLOW ENGINE & DEPENDENCY LOGIC ---
 def evaluate_process_statuses(tasks_dict, clear_at_selection):
-    """Evaluates task activations dynamically based on user specifications."""
+    """Evaluates task activations dynamically based on workflow progress."""
     status_map = {}
 
     def get_data(key):
@@ -153,38 +163,28 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
     bl_copy_done = bool(gen_data.get("bl_copy_receipt_date"))
     orig_ship_done = bool(gen_data.get("orig_shipment_rec_date"))
 
-    # 2. Clearance Complete Date: Active when Goods Arrival Est or Act completed
-    has_arrival = bool(
-        gen_data.get("act_arrival_date") or gen_data.get("est_arrival_date")
-    )
-    status_map["clearance_complete"] = (
-        "Completed"
-        if is_done("clearance_complete")
-        else ("Active" if has_arrival else "Pending")
-    )
-
-    # 3. Clear at: Active when "Original Shipment Set Received Date" completed
+    # 2. Clear at: Active when "Original Shipment Set Received Date" completed
     status_map["clear_at_select"] = (
         "Completed"
         if is_done("clear_at_select")
         else ("Active" if orig_ship_done else "Pending")
     )
 
-    # 4. Clearance Cost Estimate: Active when "BL Copy Receipt Date" completed
+    # 3. Clearance Cost Estimate: Active when "BL Copy Receipt Date" completed
     status_map["cost_estimate"] = (
         "Completed"
         if is_done("cost_estimate")
         else ("Active" if bl_copy_done else "Pending")
     )
 
-    # 5. Delivery Order: Active when "Original Shipment Set Received Date" completed
+    # 4. Delivery Order: Active when "Original Shipment Set Received Date" completed
     status_map["delivery_order"] = (
         "Completed"
         if is_done("delivery_order")
         else ("Active" if orig_ship_done else "Pending")
     )
 
-    # 6. Customs Certificate Entry: Active when "Delivery Order" completed
+    # 5. Customs Certificate Entry: Active when "Delivery Order" completed
     status_map["customs_cert"] = (
         "Completed"
         if is_done("customs_cert")
@@ -195,14 +195,11 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
     if clear_at_selection == "Port":
         cert_done = is_done("customs_cert")
 
-        # Containers Move Process: Active when Clear at = Port and Customs Cert completed
         status_map["cont_move"] = (
             "Completed"
             if is_done("cont_move")
             else ("Active" if cert_done else "Pending")
         )
-
-        # Customs Lab: Active when Customs Cert completed
         status_map["customs_lab"] = (
             "Completed"
             if is_done("customs_lab")
@@ -210,7 +207,6 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
         )
 
         cont_move_done = is_done("cont_move")
-        # SSMO File Process & Customs Examination: Active when Containers Move completed
         status_map["ssmo_file"] = (
             "Completed"
             if is_done("ssmo_file")
@@ -222,14 +218,12 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
             else ("Active" if cont_move_done else "Pending")
         )
 
-        # SSMO Examination: Active when SSMO File completed
         status_map["ssmo_exam"] = (
             "Completed"
             if is_done("ssmo_exam")
             else ("Active" if is_done("ssmo_file") else "Pending")
         )
 
-        # Customs Evaluation: Active when Customs Exam AND Customs Lab completed
         lab_data = get_data("customs_lab")
         lab_not_req = lab_data.get("lab_required") == "No"
         lab_ready = is_done("customs_lab") or lab_not_req
@@ -243,29 +237,31 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
             )
         )
 
-        # SPC Bill: Active when Customs Evaluation completed
         status_map["spc_bill"] = (
             "Completed"
             if is_done("spc_bill")
             else ("Active" if is_done("customs_eval") else "Pending")
         )
-
-        # Truck Entry Permit: Active when SPC Bill completed
         status_map["truck_permit"] = (
             "Completed"
             if is_done("truck_permit")
             else ("Active" if is_done("spc_bill") else "Pending")
         )
 
+        # Final Process for Port Track
+        status_map["final_clearance_complete"] = (
+            "Completed"
+            if is_done("final_clearance_complete")
+            else ("Active" if is_done("truck_permit") else "Pending")
+        )
+
     # --- TRACK 2: FREE ZONE ---
     elif clear_at_selection == "Free Zone":
-        # FZ Deposit Request: Active when Clear at = Free Zone
         status_map["fz_deposit_req"] = (
             "Completed" if is_done("fz_deposit_req") else "Active"
         )
 
         fz_dep_done = is_done("fz_deposit_req")
-        # Customs Inspection & SPC Bill Police: Active when FZ Deposit Request completed
         status_map["fz_customs_insp"] = (
             "Completed"
             if is_done("fz_customs_insp")
@@ -277,15 +273,18 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
             else ("Active" if fz_dep_done else "Pending")
         )
 
-        # Receive Cargo at FZ: Active when Inspection & SPC Bill completed
+        fz_cargo_ready = is_done("fz_customs_insp") and is_done("fz_spc_police")
         status_map["fz_receive_cargo"] = (
             "Completed"
             if is_done("fz_receive_cargo")
-            else (
-                "Active"
-                if (is_done("fz_customs_insp") and is_done("fz_spc_police"))
-                else "Pending"
-            )
+            else ("Active" if fz_cargo_ready else "Pending")
+        )
+
+        # Final Process for Free Zone Track
+        status_map["final_clearance_complete"] = (
+            "Completed"
+            if is_done("final_clearance_complete")
+            else ("Active" if is_done("fz_receive_cargo") else "Pending")
         )
 
     return status_map
@@ -315,31 +314,25 @@ if choice == "📋 Clearance Task Engine":
         st.warning("No shipments available.")
         st.stop()
 
-    # Shipment Selection
     selected_bl = st.selectbox(
         "Select Active Shipment / BL Number:", shipments["bl_awb"].tolist()
     )
     shipment_row = shipments[shipments["bl_awb"] == selected_bl].iloc[0]
     shipment_id = int(shipment_row["shipment_id"])
 
-    # Load Shipment Details
     shipment_data = dict(
         conn.execute(
             "SELECT * FROM shipments WHERE shipment_id = ?", (shipment_id,)
         ).fetchone()
     )
-
-    # Load tasks
     tasks_rows = conn.execute(
         "SELECT * FROM process_tasks WHERE shipment_id = ?", (shipment_id,)
     ).fetchall()
     tasks_dict = {row["process_key"]: dict(row) for row in tasks_rows}
 
-    # Evaluate dynamic status of all tasks
     clear_at = shipment_data.get("clear_at", "Port")
     evaluated_statuses = evaluate_process_statuses(tasks_dict, clear_at)
 
-    # Calculate SLA Target Total
     active_track = clear_at if clear_at in ["Port", "Free Zone"] else "Port"
     track_tasks = [
         t
@@ -348,7 +341,6 @@ if choice == "📋 Clearance Task Engine":
     ]
     total_sla_days = sum(t["target_sla"] for t in track_tasks)
 
-    # Calculate Clearance Completion Estimate Date
     anchor_date_str = (
         shipment_data.get("act_arrival_date")
         or shipment_data.get("est_arrival_date")
@@ -359,9 +351,10 @@ if choice == "📋 Clearance Task Engine":
 
     st.markdown("---")
 
-    # Header Metric Dashboard
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("PO / BU Reference", f"{shipment_row['po_number']} ({shipment_row['bu_id']})")
+    c1.metric(
+        "PO / BU Reference", f"{shipment_row['po_number']} ({shipment_row['bu_id']})"
+    )
     c2.metric("Selected Route Track", f"📍 {clear_at}")
     c3.metric("Cumulative Track SLA", f"{total_sla_days:.2f} Days")
     c4.metric(
@@ -371,19 +364,15 @@ if choice == "📋 Clearance Task Engine":
     )
 
     st.markdown("---")
-
-    # Render Process Workflow
     st.subheader("⚡ Active Clearance Processes Workflow")
 
     for key, task in tasks_dict.items():
-        # Only display Common track + active route track (Port or Free Zone)
         if task["track"] not in ["Common", clear_at]:
             continue
 
         status = evaluated_statuses.get(key, "Pending")
         task_data = json.loads(task.get("data_json", "{}"))
 
-        # Status Badges
         if status == "Completed":
             badge = "🟢 COMPLETED"
         elif status == "Active":
@@ -407,7 +396,6 @@ if choice == "📋 Clearance Task Engine":
                 )
                 continue
 
-            # Form fields rendering per task specification
             with st.form(key=f"form_{key}"):
                 updated_data = {}
 
@@ -431,7 +419,6 @@ if choice == "📋 Clearance Task Engine":
                         else None,
                     )
 
-                    # Conditional activation of L/C No
                     lc_disabled = not bool(orig_rec)
                     lc_no = st.text_input(
                         "3. L/C No. (Activates when Original Set Received)",
@@ -458,7 +445,7 @@ if choice == "📋 Clearance Task Engine":
                     )
 
                     st.markdown("---")
-                    st.markdown("**6. Clearance Completion Dates:**")
+                    st.markdown("**6. Clearance Completion Estimate Date:**")
                     manual_override = st.checkbox(
                         "Manually Override Calculated Clearance Completion"
                         " Estimate",
@@ -481,14 +468,6 @@ if choice == "📋 Clearance Task Engine":
                             f" **{calculated_completion_est}**"
                         )
 
-                    act_clear_date = st.date_input(
-                        "Actual Clearance Completion Date",
-                        value=pd.to_datetime(
-                            shipment_data.get("act_clearance_date")
-                        ).date()
-                        if shipment_data.get("act_clearance_date")
-                        else None,
-                    )
                     notes = st.text_area(
                         "7. General Notes",
                         value=shipment_data.get("notes", ""),
@@ -504,32 +483,7 @@ if choice == "📋 Clearance Task Engine":
                         "lc_no": lc_no,
                     }
 
-                # 2. Clearance Complete Date
-                elif key == "clearance_complete":
-                    c1, c2 = st.columns(2)
-                    c1.info(
-                        "Calculated Target Clearance Date:"
-                        f" **{calculated_completion_est}**"
-                    )
-                    act_date = c2.date_input(
-                        "Actual Clearance Complete Date",
-                        value=pd.to_datetime(
-                            task_data.get("act_completion_date")
-                        ).date()
-                        if task_data.get("act_completion_date")
-                        else None,
-                    )
-                    proc_notes = st.text_area(
-                        "Notes", value=task_data.get("notes", "")
-                    )
-                    updated_data = {
-                        "act_completion_date": act_date.isoformat()
-                        if act_date
-                        else None,
-                        "notes": proc_notes,
-                    }
-
-                # 3. Select Track / Clear at:
+                # 2. Select Track / Clear at:
                 elif key == "clear_at_select":
                     track_choice = st.selectbox(
                         "Select Clearance Destination Track:",
@@ -538,7 +492,7 @@ if choice == "📋 Clearance Task Engine":
                     )
                     updated_data = {"clear_at": track_choice}
 
-                # 4. Clearance Cost Estimate
+                # 3. Clearance Cost Estimate
                 elif key == "cost_estimate":
                     c1, c2 = st.columns(2)
                     est_d = c1.date_input(
@@ -548,9 +502,12 @@ if choice == "📋 Clearance Task Engine":
                         else None,
                     )
                     val = c2.number_input(
-                        "2. Estimated Value ($)",
+                        "2. Estimated Value (SDG)",
                         value=float(task_data.get("value", 0.0)),
+                        format="%.2f",
                     )
+                    st.caption(f"Formatted Value: **SDG {val:,.2f}**")
+
                     c3, c4 = st.columns(2)
                     not_bu = c3.date_input(
                         "3. Notify BU Date",
@@ -560,30 +517,40 @@ if choice == "📋 Clearance Task Engine":
                         if task_data.get("notify_bu_date")
                         else None,
                     )
-                    rec_bu = c4.number_input(
-                        "4. Actual Amount Received from BU ($)",
-                        value=float(task_data.get("actual_amount_bu", 0.0)),
+                    amt_rec_d = c4.date_input(
+                        "4. Amount Received Date",
+                        value=pd.to_datetime(
+                            task_data.get("amount_received_date")
+                        ).date()
+                        if task_data.get("amount_received_date")
+                        else None,
                     )
+
                     updated_data = {
                         "est_date": est_d.isoformat() if est_d else None,
                         "value": val,
                         "notify_bu_date": not_bu.isoformat()
                         if not_bu
                         else None,
-                        "actual_amount_bu": rec_bu,
+                        "amount_received_date": amt_rec_d.isoformat()
+                        if amt_rec_d
+                        else None,
                     }
 
-                # 5. Delivery Order
+                # 4. Delivery Order
                 elif key == "delivery_order":
                     c1, c2 = st.columns(2)
                     copy_do = c1.checkbox(
-                        "1. Collect Copy of DO",
+                        "1. Copy of DO Collected",
                         value=bool(task_data.get("copy_do")),
                     )
                     do_fees = c2.number_input(
-                        "2. DO Fees ($)",
+                        "2. DO Fees (SDG)",
                         value=float(task_data.get("do_fees", 0.0)),
+                        format="%.2f",
                     )
+                    st.caption(f"Formatted Fees: **SDG {do_fees:,.2f}**")
+
                     c3, c4 = st.columns(2)
                     settle_d = c3.date_input(
                         "3. DO Fees Settled Date",
@@ -610,7 +577,7 @@ if choice == "📋 Clearance Task Engine":
                         "received_date": rec_d.isoformat() if rec_d else None,
                     }
 
-                # 6. Customs Certificate Entry
+                # 5. Customs Certificate Entry
                 elif key == "customs_cert":
                     c1, c2 = st.columns(2)
                     entry_d = c1.date_input(
@@ -628,7 +595,7 @@ if choice == "📋 Clearance Task Engine":
                         "scuda_no": scuda_no,
                     }
 
-                # 7. Containers Move Process
+                # 6. Containers Move Process
                 elif key == "cont_move":
                     c1, c2, c3 = st.columns(3)
                     req_d = c1.date_input(
@@ -640,8 +607,9 @@ if choice == "📋 Clearance Task Engine":
                         else None,
                     )
                     bill = c2.number_input(
-                        "2. Bill Amount ($)",
+                        "2. Bill Amount (SDG)",
                         value=float(task_data.get("bill_amount", 0.0)),
+                        format="%.2f",
                     )
                     set_d = c3.date_input(
                         "3. Bill Settlement Date",
@@ -651,13 +619,69 @@ if choice == "📋 Clearance Task Engine":
                         if task_data.get("settlement_date")
                         else None,
                     )
+                    st.caption(f"Formatted Bill: **SDG {bill:,.2f}**")
                     updated_data = {
                         "request_date": req_d.isoformat() if req_d else None,
                         "bill_amount": bill,
                         "settlement_date": set_d.isoformat() if set_d else None,
                     }
 
-                # 8. Customs Lab (Conditional Activation)
+                # 7. SSMO File Process
+                elif key == "ssmo_file":
+                    c1, c2, c3 = st.columns(3)
+                    req_d = c1.date_input(
+                        "1. Move Request Date",
+                        value=pd.to_datetime(
+                            task_data.get("request_date")
+                        ).date()
+                        if task_data.get("request_date")
+                        else None,
+                    )
+                    bill = c2.number_input(
+                        "2. Bill Amount (SDG)",
+                        value=float(task_data.get("bill_amount", 0.0)),
+                        format="%.2f",
+                    )
+                    set_d = c3.date_input(
+                        "3. Bill Settlement Date",
+                        value=pd.to_datetime(
+                            task_data.get("settlement_date")
+                        ).date()
+                        if task_data.get("settlement_date")
+                        else None,
+                    )
+                    st.caption(f"Formatted Bill: **SDG {bill:,.2f}**")
+                    updated_data = {
+                        "request_date": req_d.isoformat() if req_d else None,
+                        "bill_amount": bill,
+                        "settlement_date": set_d.isoformat() if set_d else None,
+                    }
+
+                # 8. Customs Examination (Form 48) - No Fees Field
+                elif key == "customs_exam":
+                    c1, c2 = st.columns(2)
+                    st_d = c1.date_input(
+                        "1. Examination Start Date",
+                        value=pd.to_datetime(task_data.get("start_date")).date()
+                        if task_data.get("start_date")
+                        else None,
+                    )
+                    comp_d = c2.date_input(
+                        "2. Examination Completed Date",
+                        value=pd.to_datetime(
+                            task_data.get("completion_date")
+                        ).date()
+                        if task_data.get("completion_date")
+                        else None,
+                    )
+                    updated_data = {
+                        "start_date": st_d.isoformat() if st_d else None,
+                        "completion_date": comp_d.isoformat()
+                        if comp_d
+                        else None,
+                    }
+
+                # 9. Customs Lab
                 elif key == "customs_lab":
                     lab_req = st.radio(
                         "1. Customs Lab Required?",
@@ -670,9 +694,10 @@ if choice == "📋 Clearance Task Engine":
 
                     c1, c2, c3 = st.columns(3)
                     lab_fees = c1.number_input(
-                        "2. Customs Lab Fees ($)",
+                        "2. Customs Lab Fees (SDG)",
                         value=float(task_data.get("lab_fees", 0.0)),
                         disabled=not is_lab_yes,
+                        format="%.2f",
                     )
                     pay_d = c2.date_input(
                         "3. Fees Payment Date",
@@ -692,6 +717,10 @@ if choice == "📋 Clearance Task Engine":
                         else None,
                         disabled=not is_lab_yes,
                     )
+                    if is_lab_yes:
+                        st.caption(
+                            f"Formatted Lab Fees: **SDG {lab_fees:,.2f}**"
+                        )
                     updated_data = {
                         "lab_required": lab_req,
                         "lab_fees": lab_fees,
@@ -699,10 +728,159 @@ if choice == "📋 Clearance Task Engine":
                         "result_date": res_d.isoformat() if res_d else None,
                     }
 
-                # Generic Fallback Form Renderer for standard inspection / date steps
+                # 10. SSMO Examination - No Fees Field
+                elif key == "ssmo_exam":
+                    c1, c2 = st.columns(2)
+                    st_d = c1.date_input(
+                        "1. Examination Start Date",
+                        value=pd.to_datetime(task_data.get("start_date")).date()
+                        if task_data.get("start_date")
+                        else None,
+                    )
+                    iss_d = c2.date_input(
+                        "2. SSMO Certificate Issuance Date",
+                        value=pd.to_datetime(
+                            task_data.get("issuance_date")
+                        ).date()
+                        if task_data.get("issuance_date")
+                        else None,
+                    )
+                    updated_data = {
+                        "start_date": st_d.isoformat() if st_d else None,
+                        "issuance_date": iss_d.isoformat() if iss_d else None,
+                    }
+
+                # 11. Customs Evaluation
+                elif key == "customs_eval":
+                    c1, c2 = st.columns(2)
+                    eval_d = c1.date_input(
+                        "1. Evaluation Date",
+                        value=pd.to_datetime(task_data.get("eval_date")).date()
+                        if task_data.get("eval_date")
+                        else None,
+                    )
+                    cust_val = c2.number_input(
+                        "2. Customs Value (SDG)",
+                        value=float(task_data.get("customs_value", 0.0)),
+                        format="%.2f",
+                    )
+                    st.caption(
+                        f"Formatted Customs Value: **SDG {cust_val:,.2f}**"
+                    )
+
+                    c3, c4 = st.columns(2)
+                    settle_d = c3.date_input(
+                        "3. Settlement Date",
+                        value=pd.to_datetime(
+                            task_data.get("settlement_date")
+                        ).date()
+                        if task_data.get("settlement_date")
+                        else None,
+                    )
+                    exit_d = c4.date_input(
+                        "4. Release & Exit Pass Date",
+                        value=pd.to_datetime(
+                            task_data.get("exit_pass_date")
+                        ).date()
+                        if task_data.get("exit_pass_date")
+                        else None,
+                    )
+
+                    updated_data = {
+                        "eval_date": eval_d.isoformat() if eval_d else None,
+                        "customs_value": cust_val,
+                        "settlement_date": settle_d.isoformat()
+                        if settle_d
+                        else None,
+                        "exit_pass_date": exit_d.isoformat()
+                        if exit_d
+                        else None,
+                    }
+
+                # 12. SPC Bill
+                elif key == "spc_bill":
+                    c1, c2, c3 = st.columns(3)
+                    req_d = c1.date_input(
+                        "1. Request Date",
+                        value=pd.to_datetime(
+                            task_data.get("request_date")
+                        ).date()
+                        if task_data.get("request_date")
+                        else None,
+                    )
+                    spc_val = c2.number_input(
+                        "2. SPC Bill Value (SDG)",
+                        value=float(task_data.get("spc_bill_value", 0.0)),
+                        format="%.2f",
+                    )
+                    set_d = c3.date_input(
+                        "3. SPC Bill Settlement Date",
+                        value=pd.to_datetime(
+                            task_data.get("settlement_date")
+                        ).date()
+                        if task_data.get("settlement_date")
+                        else None,
+                    )
+                    st.caption(
+                        f"Formatted SPC Value: **SDG {spc_val:,.2f}**"
+                    )
+                    updated_data = {
+                        "request_date": req_d.isoformat() if req_d else None,
+                        "spc_bill_value": spc_val,
+                        "settlement_date": set_d.isoformat() if set_d else None,
+                    }
+
+                # 13. Truck Entry Permit
+                elif key == "truck_permit":
+                    c1, c2 = st.columns(2)
+                    perm_d = c1.date_input(
+                        "1. Truck Entry Permit Date",
+                        value=pd.to_datetime(
+                            task_data.get("permit_date")
+                        ).date()
+                        if task_data.get("permit_date")
+                        else None,
+                    )
+                    ret_d = c2.date_input(
+                        "2. Return Containers Date",
+                        value=pd.to_datetime(
+                            task_data.get("return_containers_date")
+                        ).date()
+                        if task_data.get("return_containers_date")
+                        else None,
+                    )
+                    updated_data = {
+                        "permit_date": perm_d.isoformat() if perm_d else None,
+                        "return_containers_date": ret_d.isoformat()
+                        if ret_d
+                        else None,
+                    }
+
+                # 14. Actual Clearance Completion (Final Process Step)
+                elif key == "final_clearance_complete":
+                    act_clear_d = st.date_input(
+                        "1. Actual Clearance Completion Date",
+                        value=pd.to_datetime(
+                            task_data.get("act_clearance_date")
+                        ).date()
+                        if task_data.get("act_clearance_date")
+                        else date.today(),
+                    )
+                    final_notes = st.text_area(
+                        "2. Final Clearance & Handover Notes",
+                        value=task_data.get("final_notes", ""),
+                    )
+                    updated_data = {
+                        "act_clearance_date": act_clear_d.isoformat()
+                        if act_clear_d
+                        else None,
+                        "final_notes": final_notes,
+                    }
+
+                # Generic Fallback Renderer
                 else:
                     d1 = st.date_input(
-                        "Start / Request Date",
+                        "Request / Start Date",
                         value=pd.to_datetime(task_data.get("start_date")).date()
                         if task_data.get("start_date")
                         else None,
@@ -716,9 +894,11 @@ if choice == "📋 Clearance Task Engine":
                         else None,
                     )
                     val = st.number_input(
-                        "Fee / Bill Amount ($)",
+                        "Amount (SDG)",
                         value=float(task_data.get("amount", 0.0)),
+                        format="%.2f",
                     )
+                    st.caption(f"Formatted Value: **SDG {val:,.2f}**")
                     updated_data = {
                         "start_date": d1.isoformat() if d1 else None,
                         "completion_date": d2.isoformat() if d2 else None,
@@ -740,7 +920,6 @@ if choice == "📋 Clearance Task Engine":
                         else task.get("completed_at")
                     )
 
-                    # Update database task JSON
                     conn.execute(
                         """
                         UPDATE process_tasks 
@@ -755,13 +934,12 @@ if choice == "📋 Clearance Task Engine":
                         ),
                     )
 
-                    # Update shipment header values if modified in gen_info or clear_at
                     if key == "gen_info":
                         conn.execute(
                             """
                             UPDATE shipments 
                             SET est_arrival_date = ?, act_arrival_date = ?, est_clearance_date = ?, 
-                                act_clearance_date = ?, manual_override_est_date = ?, notes = ?
+                                manual_override_est_date = ?, notes = ?
                             WHERE shipment_id = ?
                         """,
                             (
@@ -769,9 +947,6 @@ if choice == "📋 Clearance Task Engine":
                                 act_arr.isoformat() if act_arr else None,
                                 est_clear_date.isoformat()
                                 if est_clear_date
-                                else None,
-                                act_clear_date.isoformat()
-                                if act_clear_date
                                 else None,
                                 1 if manual_override else 0,
                                 notes,
@@ -783,6 +958,12 @@ if choice == "📋 Clearance Task Engine":
                             "UPDATE shipments SET clear_at = ? WHERE"
                             " shipment_id = ?",
                             (updated_data["clear_at"], shipment_id),
+                        )
+                    elif key == "final_clearance_complete" and mark_complete:
+                        conn.execute(
+                            "UPDATE shipments SET act_clearance_date = ?"
+                            " WHERE shipment_id = ?",
+                            (updated_data["act_clearance_date"], shipment_id),
                         )
 
                     conn.commit()
