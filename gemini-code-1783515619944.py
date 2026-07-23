@@ -12,9 +12,9 @@ st.set_page_config(
 )
 
 
-# --- CURRENCY & NUMBER FORMATTING HELPERS ---
+# --- HELPERS: PARSING & FORMATTING ---
 def parse_amount(val) -> float:
-    """Parses numeric input (with or without commas/currency symbols) into a float."""
+    """Parses numeric input with commas/currency symbols into a clean float."""
     if val is None or val == "":
         return 0.0
     if isinstance(val, (int, float)):
@@ -29,12 +29,12 @@ def parse_amount(val) -> float:
 
 
 def format_amount(val) -> str:
-    """Formats float/number into comma-separated currency string (e.g., 500,000.00)."""
+    """Formats float into a comma-separated currency string (e.g. 100,000.00)."""
     num = parse_amount(val)
     return f"{num:,.2f}"
 
 
-# --- 1. DATABASE CONNECTION & INITIALIZATION ---
+# --- DATABASE CONNECTION & INITIALIZATION ---
 def get_db_connection():
     conn = sqlite3.connect("shipments.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -42,25 +42,46 @@ def get_db_connection():
 
 
 def init_db():
-    """Initializes and seeds master orders, active shipments, and task workflow engine."""
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 1. Master Orders Table
+    # 1. Master Orders Header Table (Fully Customized)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS master_orders (
             po_number TEXT PRIMARY KEY,
             supplier_name TEXT,
             bu_id TEXT,
             order_date DATE,
-            total_po_value REAL,
+            incoterm TEXT,
             currency TEXT DEFAULT 'USD',
+            total_po_value REAL,
+            form_i_number TEXT,
+            bank_name TEXT,
+            country_of_origin TEXT,
+            port_of_loading TEXT,
+            payment_terms TEXT,
             status TEXT DEFAULT 'Open',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # 2. Shipments Table
+    # 2. PO Line Items Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS po_line_items (
+            item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            po_number TEXT,
+            item_code TEXT,
+            item_description TEXT,
+            hs_code TEXT,
+            quantity REAL,
+            unit_price REAL,
+            total_price REAL,
+            ssmo_required INTEGER DEFAULT 0,
+            FOREIGN KEY(po_number) REFERENCES master_orders(po_number)
+        )
+    """)
+
+    # 3. Shipments Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shipments (
             shipment_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,7 +100,7 @@ def init_db():
         )
     """)
 
-    # 3. Process Tasks Engine Table
+    # 4. Process Tasks Engine Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS process_tasks (
             task_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,61 +116,60 @@ def init_db():
         )
     """)
 
-    # Seed initial Master Orders & Shipments if empty
+    # Seed Sample Data if Database is Empty
     cursor.execute(
-        "SELECT COUNT(*) FROM master_orders WHERE po_number = 'PO-8812'"
+        "SELECT COUNT(*) FROM master_orders WHERE po_number = 'PO-2026-8812'"
     )
     if cursor.fetchone()[0] == 0:
         today = date.today()
 
-        # Master Orders
+        # Seed Master Order
         cursor.execute(
             """
-            INSERT OR IGNORE INTO master_orders (po_number, supplier_name, bu_id, order_date, total_po_value, currency)
+            INSERT OR IGNORE INTO master_orders 
+            (po_number, supplier_name, bu_id, order_date, incoterm, currency, total_po_value, form_i_number, bank_name, country_of_origin, port_of_loading, payment_terms, status)
             VALUES 
-            ('PO-8812', 'Global Machinery Ltd', 'BU-LOGISTICS', ?, 1500000.0, 'USD'),
-            ('PO-9043', 'Retail Logistics Hub', 'BU-RETAIL', ?, 850000.0, 'USD')
+            ('PO-2026-8812', 'Global Industrial Machinery Supplies', 'BU-LOGISTICS', ?, 'CIF', 'USD', 250000.0, 'FI-99201', 'Bank of Khartoum', 'Germany', 'Hamburg Port', 'L/C 90 Days', 'Open'),
+            ('PO-2026-9043', 'Retail Logistics Enterprise', 'BU-RETAIL', ?, 'FOB', 'USD', 120000.0, 'FI-88310', 'Omdurman Bank', 'China', 'Ningbo Port', 'Advance Payment', 'Open')
         """,
             (
-                (today - timedelta(days=10)).isoformat(),
+                (today - timedelta(days=15)).isoformat(),
                 (today - timedelta(days=5)).isoformat(),
             ),
         )
 
-        # Shipments
+        # Seed PO Line Items
+        cursor.execute("""
+            INSERT OR IGNORE INTO po_line_items (po_number, item_code, item_description, hs_code, quantity, unit_price, total_price, ssmo_required)
+            VALUES 
+            ('PO-2026-8812', 'GEN-500KW', '500KW Heavy Duty Industrial Generator', '8502.13.00', 2, 100000.0, 200000.0, 1),
+            ('PO-2026-8812', 'SPA-FILTER', 'Replacement Air Filter Assembly Set', '8421.23.00', 50, 1000.0, 50000.0, 0),
+            ('PO-2026-9043', 'TEX-FABRIC', 'Industrial Cotton Fabric Rolls', '5208.11.00', 1000, 120.0, 120000.0, 1)
+        """)
+
+        # Seed Shipment
         cursor.execute(
             """
             INSERT OR IGNORE INTO shipments (bl_awb, po_number, bu_id, est_arrival_date, clear_at, notes)
             VALUES 
-            ('BL-2026-PORT-101', 'PO-8812', 'BU-LOGISTICS', ?, 'Port', 'Priority heavy equipment shipment'),
-            ('BL-2026-FZ-102', 'PO-9043', 'BU-RETAIL', ?, 'Free Zone', 'Free Zone transit storage shipment')
+            ('BL-2026-PORT-101', 'PO-2026-8812', 'BU-LOGISTICS', ?, 'Port', 'Priority heavy equipment shipment')
         """,
-            (
-                (today + timedelta(days=1)).isoformat(),
-                (today + timedelta(days=3)).isoformat(),
-            ),
+            ((today + timedelta(days=2)).isoformat(),),
         )
 
-        # Get Shipment IDs
         cursor.execute(
             "SELECT shipment_id FROM shipments WHERE bl_awb ="
             " 'BL-2026-PORT-101'"
         )
         shp1_id = cursor.fetchone()[0]
-        cursor.execute(
-            "SELECT shipment_id FROM shipments WHERE bl_awb = 'BL-2026-FZ-102'"
-        )
-        shp2_id = cursor.fetchone()[0]
-
         seed_tasks_for_shipment(cursor, shp1_id)
-        seed_tasks_for_shipment(cursor, shp2_id)
 
     conn.commit()
     conn.close()
 
 
 def seed_tasks_for_shipment(cursor, shipment_id):
-    """Populates standard process workflow definitions for a given shipment."""
+    """Seeds standard clearance task definitions for a new shipment."""
     default_processes = [
         ("gen_info", "General Clearance Info", "Common", 0.25, "{}"),
         ("clear_at_select", "Clear at:", "Common", 0.25, "{}"),
@@ -250,9 +270,8 @@ def seed_tasks_for_shipment(cursor, shipment_id):
 init_db()
 
 
-# --- 2. WORKFLOW ENGINE DEPENDENCY EVALUATOR ---
+# --- WORKFLOW ENGINE EVALUATOR ---
 def evaluate_process_statuses(tasks_dict, clear_at_selection):
-    """Evaluates process activations based on workflow progress."""
     status_map = {}
 
     def get_data(key):
@@ -384,10 +403,11 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
     return status_map
 
 
-# --- 3. SIDEBAR NAVIGATION ---
-st.sidebar.title("🚢 Logistics Pipeline")
+# --- NAVIGATION ---
+st.sidebar.title("🚢 Supply Chain Hub")
 menu = [
-    "📦 Master Orders & Shipments",
+    "📦 Master Orders & Line Items",
+    "🚢 Attach Shipment (BL/AWB)",
     "📋 Clearance Task Engine",
     "📊 Clearance & SLA Analytics",
     "⚙️ Target SLA Settings",
@@ -396,81 +416,227 @@ choice = st.sidebar.selectbox("Select Module", menu)
 
 
 # ==============================================================================
-# MODULE 1: MASTER ORDERS & SHIPMENT CREATION
+# MODULE 1: MASTER ORDERS & LINE ITEMS (FULL CUSTOMIZATION RESTORED)
 # ==============================================================================
-if choice == "📦 Master Orders & Shipments":
-    st.title("📦 Master Order (PO) & Shipment Management")
+if choice == "📦 Master Orders & Line Items":
+    st.title("📦 Master Purchase Order & Line Item Management")
 
     tab1, tab2 = st.tabs(
-        ["1️⃣ Create Master Order (PO)", "2️⃣ Attach Shipment (BL / AWB)"]
+        ["1️⃣ Create Master Order & Line Items", "2️⃣ Master Order Registry"]
     )
 
     # --- TAB 1: CREATE MASTER ORDER ---
     with tab1:
-        st.subheader("📝 New Master Purchase Order Entry")
+        st.subheader("📝 Master Order Header Details")
 
-        col1, col2 = st.columns(2)
-        po_number = col1.text_input(
+        c1, c2, c3 = st.columns(3)
+        po_number = c1.text_input(
             "PO Number *", placeholder="e.g. PO-2026-9901"
         )
-        supplier_name = col2.text_input(
-            "Supplier Name", placeholder="e.g. Global Tech Supplies"
+        supplier_name = c2.text_input(
+            "Supplier / Vendor Name *", placeholder="e.g. Global Supplies Ltd"
         )
-
-        col3, col4, col5 = st.columns(3)
-        bu_id = col3.selectbox(
-            "Business Unit (BU)",
+        bu_id = c3.selectbox(
+            "Business Unit (BU) *",
             ["BU-LOGISTICS", "BU-RETAIL", "BU-ENERGY", "BU-MANUFACTURING"],
         )
-        order_date = col4.date_input("Order Date", value=date.today())
-        currency = col5.selectbox("Currency", ["USD", "EUR", "SDG", "AED"])
 
-        po_val_raw = st.text_input(
-            "Total PO Value",
-            value="100,000.00",
-            help="Accepts formatted numbers with commas",
+        c4, c5, c6, c7 = st.columns(4)
+        order_date = c4.date_input("Order Date", value=date.today())
+        incoterm = c5.selectbox(
+            "Incoterms", ["CIF", "FOB", "CFR", "EXW", "DDP", "FCA"]
         )
-        po_value = parse_amount(po_val_raw)
+        currency = c6.selectbox("Currency", ["USD", "EUR", "SDG", "AED"])
+        po_val_raw = c7.text_input(
+            "Header PO Value",
+            value="100,000.00",
+            help="Value formatted automatically",
+        )
+        total_po_value = parse_amount(po_val_raw)
 
-        if st.button("💾 Save Master Order", use_container_width=True):
-            if not po_number.strip():
-                st.error("PO Number is required.")
+        st.markdown("#### 🏛️ Banking & Logistics Customs Metadata")
+        col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+        form_i = col_b1.text_input(
+            "Form I / L/C No.", placeholder="e.g. FI-99021"
+        )
+        bank_name = col_b2.text_input(
+            "Bank Name", placeholder="e.g. Bank of Khartoum"
+        )
+        origin_country = col_b3.text_input(
+            "Country of Origin", placeholder="e.g. Germany / China"
+        )
+        loading_port = col_b4.text_input(
+            "Port of Loading", placeholder="e.g. Hamburg Port"
+        )
+
+        payment_terms = st.text_input(
+            "Payment Terms", placeholder="e.g. L/C 90 Days / 30% Advance"
+        )
+
+        st.markdown("---")
+        st.subheader("🛒 PO Line Items Entry")
+        st.caption(
+            "Add itemized line breakdown (HS Codes, Quantities, Unit Prices,"
+            " SSMO flags)"
+        )
+
+        # Session state for temporary line item entry table
+        if "temp_line_items" not in st.session_state:
+            st.session_state["temp_line_items"] = []
+
+        with st.expander("➕ Add Line Item to PO", expanded=True):
+            li_col1, li_col2, li_col3 = st.columns(3)
+            item_code = li_col1.text_input(
+                "Item Code / Part No.", placeholder="GEN-500"
+            )
+            item_desc = li_col2.text_input(
+                "Item Description *", placeholder="500KW Generator Set"
+            )
+            hs_code = li_col3.text_input(
+                "HS Code (Tariff)", placeholder="8502.13.00"
+            )
+
+            li_col4, li_col5, li_col6 = st.columns(3)
+            qty = li_col4.number_input("Quantity", min_value=1.0, value=1.0)
+            u_price_raw = li_col5.text_input("Unit Price", value="1,000.00")
+            unit_price = parse_amount(u_price_raw)
+            ssmo_req = li_col6.checkbox(
+                "SSMO / Inspection Required?", value=True
+            )
+
+            line_total = qty * unit_price
+            st.info(f"Calculated Line Total: **{format_amount(line_total)}**")
+
+            if st.button("➕ Add Item to List"):
+                if not item_desc.strip():
+                    st.error("Item Description is required.")
+                else:
+                    st.session_state["temp_line_items"].append({
+                        "item_code": item_code.strip(),
+                        "item_description": item_desc.strip(),
+                        "hs_code": hs_code.strip(),
+                        "quantity": qty,
+                        "unit_price": unit_price,
+                        "total_price": line_total,
+                        "ssmo_required": 1 if ssmo_req else 0,
+                    })
+                    st.success(f"Added '{item_desc}' to draft PO line items!")
+                    st.rerun()
+
+        # Display Draft Line Items Table
+        if st.session_state["temp_line_items"]:
+            st.markdown("##### Current Draft Line Items:")
+            df_temp = pd.DataFrame(st.session_state["temp_line_items"])
+            df_temp["formatted_unit_price"] = df_temp["unit_price"].apply(
+                format_amount
+            )
+            df_temp["formatted_total"] = df_temp["total_price"].apply(
+                format_amount
+            )
+
+            st.dataframe(
+                df_temp[[
+                    "item_code",
+                    "item_description",
+                    "hs_code",
+                    "quantity",
+                    "formatted_unit_price",
+                    "formatted_total",
+                    "ssmo_required",
+                ]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            line_item_sum = sum(
+                item["total_price"]
+                for item in st.session_state["temp_line_items"]
+            )
+            st.write(
+                f"**Total Line Items Sum:** `{currency} {format_amount(line_item_sum)}`"
+            )
+
+            if st.button("🗑️ Clear Draft Line Items"):
+                st.session_state["temp_line_items"] = []
+                st.rerun()
+
+        st.markdown("---")
+        if st.button(
+            "💾 Save Complete Master Order",
+            use_container_width=True,
+            type="primary",
+        ):
+            if not po_number.strip() or not supplier_name.strip():
+                st.error("PO Number and Supplier Name are required.")
             else:
                 conn = get_db_connection()
                 try:
-                    conn.execute(
+                    cursor = conn.cursor()
+                    cursor.execute(
                         """
-                        INSERT INTO master_orders (po_number, supplier_name, bu_id, order_date, total_po_value, currency)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO master_orders 
+                        (po_number, supplier_name, bu_id, order_date, incoterm, currency, total_po_value, form_i_number, bank_name, country_of_origin, port_of_loading, payment_terms)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             po_number.strip(),
                             supplier_name.strip(),
                             bu_id,
                             order_date.isoformat(),
-                            po_value,
+                            incoterm,
                             currency,
+                            total_po_value,
+                            form_i.strip(),
+                            bank_name.strip(),
+                            origin_country.strip(),
+                            loading_port.strip(),
+                            payment_terms.strip(),
                         ),
                     )
+
+                    # Insert line items
+                    for item in st.session_state["temp_line_items"]:
+                        cursor.execute(
+                            """
+                            INSERT INTO po_line_items (po_number, item_code, item_description, hs_code, quantity, unit_price, total_price, ssmo_required)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                            (
+                                po_number.strip(),
+                                item["item_code"],
+                                item["item_description"],
+                                item["hs_code"],
+                                item["quantity"],
+                                item["unit_price"],
+                                item["total_price"],
+                                item["ssmo_required"],
+                            ),
+                        )
+
                     conn.commit()
                     st.success(
-                        f"Master Order **{po_number}** created successfully!"
+                        f"Master Order **{po_number}** and"
+                        f" {len(st.session_state['temp_line_items'])} Line Items"
+                        " saved successfully!"
                     )
+                    st.session_state["temp_line_items"] = []
                     st.rerun()
                 except sqlite3.IntegrityError:
                     st.error(f"PO Number '{po_number}' already exists.")
                 finally:
                     conn.close()
 
-        st.markdown("---")
-        st.subheader("📋 Registered Master Orders")
+    # --- TAB 2: MASTER ORDER REGISTRY ---
+    with tab2:
+        st.subheader("📋 Registered Master Orders Directory")
         conn = get_db_connection()
         mo_df = pd.read_sql_query(
-            "SELECT po_number, supplier_name, bu_id, order_date, total_po_value,"
-            " currency, status FROM master_orders ORDER BY created_at DESC",
+            "SELECT po_number, supplier_name, bu_id, order_date, incoterm,"
+            " currency, total_po_value, form_i_number, bank_name,"
+            " country_of_origin, status FROM master_orders ORDER BY created_at"
+            " DESC",
             conn,
         )
-        conn.close()
 
         if not mo_df.empty:
             mo_df["total_po_value"] = mo_df["total_po_value"].apply(
@@ -478,105 +644,145 @@ if choice == "📦 Master Orders & Shipments":
             )
             st.dataframe(mo_df, use_container_width=True, hide_index=True)
 
-    # --- TAB 2: CREATE SHIPMENT ---
-    with tab2:
-        st.subheader("🚢 Attach Shipment to Master Order")
-
-        conn = get_db_connection()
-        existing_pos = pd.read_sql_query(
-            "SELECT po_number, bu_id, supplier_name FROM master_orders WHERE"
-            " status = 'Open'",
-            conn,
-        )
-        conn.close()
-
-        if existing_pos.empty:
-            st.info(
-                "No Master Orders found. Please create a Master Order in Tab 1"
-                " first."
-            )
-        else:
-            selected_po = st.selectbox(
-                "Select Master Order (PO) *",
-                existing_pos["po_number"].tolist(),
-                format_func=lambda x: f"{x} - {existing_pos[existing_pos['po_number'] == x]['supplier_name'].values[0]} ({existing_pos[existing_pos['po_number'] == x]['bu_id'].values[0]})",
+            st.markdown("---")
+            st.subheader("🔎 Inspect PO Line Items & Attached Shipments")
+            selected_inspect_po = st.selectbox(
+                "Select Master Order to Inspect:", mo_df["po_number"].tolist()
             )
 
-            col1, col2 = st.columns(2)
-            bl_awb = col1.text_input(
-                "BL / AWB Number *", placeholder="e.g. BL-2026-PORT-200"
-            )
-            clear_at = col2.selectbox(
-                "Initial Route Track", ["Port", "Free Zone", "Pending"]
-            )
-
-            col3, col4 = st.columns(2)
-            est_arrival = col3.date_input(
-                "Estimated Arrival Date (ETA)", value=date.today()
-            )
-            notes = col4.text_area(
-                "Cargo / Shipment Notes",
-                placeholder="Container type, priority, instructions...",
-            )
-
-            if st.button("🚀 Create & Initialize Shipment"):
-                if not bl_awb.strip():
-                    st.error("BL / AWB Number is required.")
+            col_li, col_sh = st.columns(2)
+            with col_li:
+                st.markdown("**Itemized Breakdown:**")
+                items_df = pd.read_sql_query(
+                    "SELECT item_code, item_description, hs_code, quantity,"
+                    " unit_price, total_price, ssmo_required FROM po_line_items"
+                    " WHERE po_number = ?",
+                    conn,
+                    params=(selected_inspect_po,),
+                )
+                if not items_df.empty:
+                    items_df["unit_price"] = items_df["unit_price"].apply(
+                        format_amount
+                    )
+                    items_df["total_price"] = items_df["total_price"].apply(
+                        format_amount
+                    )
+                    st.dataframe(
+                        items_df, use_container_width=True, hide_index=True
+                    )
                 else:
-                    conn = get_db_connection()
-                    po_row = existing_pos[
-                        existing_pos["po_number"] == selected_po
-                    ].iloc[0]
-                    try:
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            """
-                            INSERT INTO shipments (bl_awb, po_number, bu_id, clear_at, est_arrival_date, notes)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                            (
-                                bl_awb.strip(),
-                                selected_po,
-                                po_row["bu_id"],
-                                clear_at,
-                                est_arrival.isoformat(),
-                                notes,
-                            ),
-                        )
-                        shp_id = cursor.lastrowid
+                    st.info("No line items recorded for this PO.")
 
-                        seed_tasks_for_shipment(cursor, shp_id)
-                        conn.commit()
-                        st.success(
-                            f"Shipment **{bl_awb}** linked to PO"
-                            f" **{selected_po}** and initialized into clearance"
-                            " workflow!"
-                        )
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error(
-                            f"Shipment with BL/AWB '{bl_awb}' already exists."
-                        )
-                    finally:
-                        conn.close()
+            with col_sh:
+                st.markdown("**Linked Shipments (BL / AWB):**")
+                shp_linked_df = pd.read_sql_query(
+                    "SELECT bl_awb, clear_at, est_arrival_date,"
+                    " est_clearance_date FROM shipments WHERE po_number = ?",
+                    conn,
+                    params=(selected_inspect_po,),
+                )
+                if not shp_linked_df.empty:
+                    st.dataframe(
+                        shp_linked_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.info("No shipments linked to this PO yet.")
 
-        st.markdown("---")
-        st.subheader("📌 Active Shipments")
-        conn = get_db_connection()
-        shp_df = pd.read_sql_query(
-            "SELECT shipment_id, bl_awb, po_number, bu_id, clear_at,"
-            " est_arrival_date, est_clearance_date, created_at FROM shipments"
-            " ORDER BY created_at DESC",
-            conn,
-        )
         conn.close()
-
-        if not shp_df.empty:
-            st.dataframe(shp_df, use_container_width=True, hide_index=True)
 
 
 # ==============================================================================
-# MODULE 2: CLEARANCE TASK ENGINE
+# MODULE 2: ATTACH SHIPMENT (BL / AWB)
+# ==============================================================================
+elif choice == "🚢 Attach Shipment (BL/AWB)":
+    st.title("🚢 Attach Shipment to Master Purchase Order")
+
+    conn = get_db_connection()
+    existing_pos = pd.read_sql_query(
+        "SELECT po_number, bu_id, supplier_name, currency, total_po_value FROM"
+        " master_orders WHERE status = 'Open'",
+        conn,
+    )
+
+    if existing_pos.empty:
+        st.info("No open Master Orders available. Please create a PO first.")
+    else:
+        selected_po = st.selectbox(
+            "Select Master Order (PO) *",
+            existing_pos["po_number"].tolist(),
+            format_func=lambda x: f"{x} - {existing_pos[existing_pos['po_number'] == x]['supplier_name'].values[0]} ({existing_pos[existing_pos['po_number'] == x]['bu_id'].values[0]})",
+        )
+
+        col1, col2 = st.columns(2)
+        bl_awb = col1.text_input(
+            "BL / AWB Number *", placeholder="e.g. BL-2026-PORT-200"
+        )
+        clear_at = col2.selectbox(
+            "Initial Clearance Route Track", ["Port", "Free Zone", "Pending"]
+        )
+
+        col3, col4 = st.columns(2)
+        est_arrival = col3.date_input(
+            "Estimated Arrival Date (ETA)", value=date.today()
+        )
+        notes = col4.text_area(
+            "Shipment Cargo Description / Notes",
+            placeholder="Containers specs, priority handling instructions...",
+        )
+
+        if st.button("🚀 Create Shipment & Seed Clearance Tasks"):
+            if not bl_awb.strip():
+                st.error("BL / AWB Number is required.")
+            else:
+                po_row = existing_pos[
+                    existing_pos["po_number"] == selected_po
+                ].iloc[0]
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        """
+                        INSERT INTO shipments (bl_awb, po_number, bu_id, clear_at, est_arrival_date, notes)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            bl_awb.strip(),
+                            selected_po,
+                            po_row["bu_id"],
+                            clear_at,
+                            est_arrival.isoformat(),
+                            notes,
+                        ),
+                    )
+                    shp_id = cursor.lastrowid
+
+                    seed_tasks_for_shipment(cursor, shp_id)
+                    conn.commit()
+                    st.success(
+                        f"Shipment **{bl_awb}** linked to PO **{selected_po}**"
+                        " and initialized in Clearance Workflow Engine!"
+                    )
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error(f"Shipment with BL/AWB '{bl_awb}' already exists.")
+
+    st.markdown("---")
+    st.subheader("📌 Active Shipments Pipeline")
+    shp_df = pd.read_sql_query(
+        "SELECT shipment_id, bl_awb, po_number, bu_id, clear_at,"
+        " est_arrival_date, est_clearance_date, created_at FROM shipments ORDER"
+        " BY created_at DESC",
+        conn,
+    )
+    conn.close()
+
+    if not shp_df.empty:
+        st.dataframe(shp_df, use_container_width=True, hide_index=True)
+
+
+# ==============================================================================
+# MODULE 3: CLEARANCE TASK ENGINE
 # ==============================================================================
 elif choice == "📋 Clearance Task Engine":
     st.title("📋 Clearance Task Workflow Engine")
@@ -588,7 +794,7 @@ elif choice == "📋 Clearance Task Engine":
     )
 
     if shipments.empty:
-        st.warning("No shipments available. Create one in 'Master Orders'.")
+        st.warning("No shipments available. Attach a shipment first.")
         st.stop()
 
     selected_bl = st.selectbox(
@@ -627,7 +833,6 @@ elif choice == "📋 Clearance Task Engine":
     calculated_completion_est = anchor_date + timedelta(days=total_sla_days)
 
     st.markdown("---")
-
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(
         "PO / BU Reference", f"{shipment_row['po_number']} ({shipment_row['bu_id']})"
@@ -668,14 +873,14 @@ elif choice == "📋 Clearance Task Engine":
 
             if status == "Locked":
                 st.info(
-                    "✋ Process is currently locked. Complete preceding"
-                    " prerequisite steps to activate."
+                    "✋ Process locked. Complete preceding prerequisite steps to"
+                    " activate."
                 )
                 continue
 
             updated_data = {}
 
-            # 1. General Info
+            # 1. General Info Process
             if key == "gen_info":
                 col1, col2 = st.columns(2)
                 bl_rec = col1.date_input(
@@ -744,11 +949,11 @@ elif choice == "📋 Clearance Task Engine":
 
                 with col_est2:
                     existing_est_date = shipment_data.get("est_clearance_date")
-                    if existing_est_date and manual_override:
-                        default_date = pd.to_datetime(existing_est_date).date()
-                    else:
-                        default_date = calculated_completion_est
-
+                    default_date = (
+                        pd.to_datetime(existing_est_date).date()
+                        if (existing_est_date and manual_override)
+                        else calculated_completion_est
+                    )
                     manual_est_clear_date = st.date_input(
                         "Select Manual Clearance Completion Estimate Date",
                         value=default_date,
@@ -761,7 +966,6 @@ elif choice == "📋 Clearance Task Engine":
                     if manual_override
                     else calculated_completion_est
                 )
-
                 notes = st.text_area(
                     "7. General Notes",
                     value=shipment_data.get("notes", ""),
@@ -778,7 +982,7 @@ elif choice == "📋 Clearance Task Engine":
                     "lc_no": lc_no,
                 }
 
-            # 2. Select Track
+            # 2. Track Selection
             elif key == "clear_at_select":
                 track_choice = st.selectbox(
                     "Select Clearance Destination Track:",
@@ -891,9 +1095,9 @@ elif choice == "📋 Clearance Task Engine":
                     "scuda_no": scuda_no,
                 }
 
-            # Generic fallback for remaining steps
+            # Generic Step
             else:
-                st.caption("Standard step task recording")
+                st.caption("Standard task status recording")
 
             st.markdown("---")
             c_save, c_mark = st.columns([2, 1])
@@ -960,7 +1164,7 @@ elif choice == "📋 Clearance Task Engine":
 
 
 # ==============================================================================
-# MODULE 3: BOTTLENECK & SLA ANALYTICS
+# MODULE 4: ANALYTICS & TARGET SLA CONFIGURATION
 # ==============================================================================
 elif choice == "📊 Clearance & SLA Analytics":
     st.title("📊 Clearance SLA & Bottleneck Analytics")
@@ -968,7 +1172,7 @@ elif choice == "📊 Clearance & SLA Analytics":
     conn = get_db_connection()
     df_tasks = pd.read_sql_query(
         """
-        SELECT t.task_id, s.bl_awb, s.po_number, s.clear_at, t.process_name, t.track, t.target_sla, t.status, t.completed_at
+        SELECT t.task_id, s.bl_awb, s.po_number, s.clear_at, t.process_name, t.track, t.target_sla, t.status
         FROM process_tasks t
         JOIN shipments s ON t.shipment_id = s.shipment_id
     """,
@@ -976,60 +1180,35 @@ elif choice == "📊 Clearance & SLA Analytics":
     )
     conn.close()
 
-    if df_tasks.empty:
-        st.info("No task data available.")
-        st.stop()
+    if not df_tasks.empty:
+        total_tasks = len(df_tasks)
+        completed_tasks = len(df_tasks[df_tasks["status"] == "Completed"])
+        active_tasks = len(df_tasks[df_tasks["status"] == "Active"])
 
-    total_tasks = len(df_tasks)
-    completed_tasks = len(df_tasks[df_tasks["status"] == "Completed"])
-    active_tasks = len(df_tasks[df_tasks["status"] == "Active"])
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Workflow Steps", total_tasks)
-    m2.metric("Completed Steps", completed_tasks)
-    m3.metric("Active Steps", active_tasks)
-    m4.metric(
-        "Overall Progress", f"{(completed_tasks/total_tasks*100):.1f}%"
-    )
-
-    st.markdown("---")
-    st.markdown("### ⏳ Target SLA Breakdown by Process")
-
-    sla_summary = (
-        df_tasks.groupby(["track", "process_name"])
-        .agg(
-            target_sla=("target_sla", "first"),
-            completed_count=("status", lambda x: (x == "Completed").sum()),
-            active_count=("status", lambda x: (x == "Active").sum()),
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Steps", total_tasks)
+        m2.metric("Completed Steps", completed_tasks)
+        m3.metric("Active Steps", active_tasks)
+        m4.metric(
+            "Overall Progress", f"{(completed_tasks/total_tasks*100):.1f}%"
         )
-        .reset_index()
-    )
 
-    st.dataframe(
-        sla_summary,
-        column_config={
-            "track": st.column_config.TextColumn("Track Route"),
-            "process_name": st.column_config.TextColumn("Process Name"),
-            "target_sla": st.column_config.NumberColumn(
-                "Target SLA (Days)", format="%.2f d"
-            ),
-            "completed_count": st.column_config.NumberColumn(
-                "Completed Shipments", format="%d"
-            ),
-            "active_count": st.column_config.NumberColumn(
-                "Active Shipments", format="%d"
-            ),
-        },
-        use_container_width=True,
-        hide_index=True,
-    )
+        st.markdown("---")
+        st.markdown("### ⏳ Target SLA Summary by Process Step")
+        sla_summary = (
+            df_tasks.groupby(["track", "process_name"])
+            .agg(
+                target_sla=("target_sla", "first"),
+                completed_count=("status", lambda x: (x == "Completed").sum()),
+                active_count=("status", lambda x: (x == "Active").sum()),
+            )
+            .reset_index()
+        )
 
+        st.dataframe(sla_summary, use_container_width=True, hide_index=True)
 
-# ==============================================================================
-# MODULE 4: TARGET SLA CONFIGURATION
-# ==============================================================================
 elif choice == "⚙️ Target SLA Settings":
-    st.title("⚙️ Configure Process SLA Targets")
+    st.title("⚙️ Configure Process Target SLAs")
 
     conn = get_db_connection()
     distinct_tasks = pd.read_sql_query(
@@ -1040,7 +1219,7 @@ elif choice == "⚙️ Target SLA Settings":
 
     if not distinct_tasks.empty:
         selected_proc = st.selectbox(
-            "Select Process to Edit Target SLA:",
+            "Select Process to Edit SLA:",
             distinct_tasks["process_name"].tolist(),
         )
         proc_row = distinct_tasks[
@@ -1049,25 +1228,23 @@ elif choice == "⚙️ Target SLA Settings":
 
         c1, c2 = st.columns(2)
         c1.text_input("Track Route", value=proc_row["track"], disabled=True)
-        new_sla_val = c2.number_input(
+        new_sla = c2.number_input(
             "Target SLA (Days)",
             value=float(proc_row["target_sla"]),
             step=0.25,
             min_value=0.1,
         )
 
-        if st.button("💾 Save SLA Target"):
+        if st.button("💾 Save Updated SLA"):
             cursor = conn.cursor()
             cursor.execute(
                 "UPDATE process_tasks SET target_sla = ? WHERE process_name ="
                 " ?",
-                (new_sla_val, selected_proc),
+                (new_sla, selected_proc),
             )
             conn.commit()
-            conn.close()
             st.success(
-                f"Updated SLA target for '{selected_proc}' to {new_sla_val}"
-                " days!"
+                f"Updated SLA for '{selected_proc}' to {new_sla} days!"
             )
             st.rerun()
     conn.close()
