@@ -42,7 +42,7 @@ def get_db_connection():
 
 
 def init_db():
-    """Initializes tables for master shipments and process workflows."""
+    """Initializes and seeds fresh active sample shipments and tasks."""
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -78,9 +78,9 @@ def init_db():
         )
     """)
 
+    # Force fresh seed data with uncompleted status and sample values
     cursor.execute(
-        "SELECT COUNT(*) FROM process_tasks WHERE process_key ="
-        " 'final_clearance_complete'"
+        "SELECT COUNT(*) FROM shipments WHERE bl_awb = 'BL-2026-PORT-101'"
     )
     if cursor.fetchone()[0] == 0:
         cursor.execute("DELETE FROM process_tasks")
@@ -88,26 +88,23 @@ def init_db():
 
         today = date.today()
 
-        # Seed Shipment 1 (Port)
-        cursor.execute(
-            """
-            INSERT INTO shipments (bl_awb, po_number, bu_id, est_arrival_date, act_arrival_date, clear_at, notes)
-            VALUES ('BL-2026-PORT-01', 'PO-8812', 'BU-LOGISTICS', ?, ?, 'Port', 'Priority machinery cargo')
-        """,
-            (
-                (today - timedelta(days=5)).isoformat(),
-                (today - timedelta(days=4)).isoformat(),
-            ),
-        )
-        shp1_id = cursor.lastrowid
-
-        # Seed Shipment 2 (Free Zone)
+        # Fresh Sample 1 (Port Track)
         cursor.execute(
             """
             INSERT INTO shipments (bl_awb, po_number, bu_id, est_arrival_date, clear_at, notes)
-            VALUES ('BL-2026-FZ-02', 'PO-9043', 'BU-RETAIL', ?, 'Free Zone', 'FZ Storage deposit shipment')
+            VALUES ('BL-2026-PORT-101', 'PO-8812', 'BU-LOGISTICS', ?, 'Port', 'Priority machinery cargo shipment')
         """,
-            ((today + timedelta(days=2)).isoformat(),),
+            ((today + timedelta(days=1)).isoformat(),),
+        )
+        shp1_id = cursor.lastrowid
+
+        # Fresh Sample 2 (Free Zone Track)
+        cursor.execute(
+            """
+            INSERT INTO shipments (bl_awb, po_number, bu_id, est_arrival_date, clear_at, notes)
+            VALUES ('BL-2026-FZ-102', 'PO-9043', 'BU-RETAIL', ?, 'Free Zone', 'Free Zone storage deposit shipment')
+        """,
+            ((today + timedelta(days=3)).isoformat(),),
         )
         shp2_id = cursor.lastrowid
 
@@ -119,44 +116,113 @@ def init_db():
 
 
 def seed_tasks_for_shipment(cursor, shipment_id):
-    """Populates standard process definitions."""
+    """Populates standard process definitions with default formatted monetary amounts."""
     default_processes = [
-        # Common Processes
-        ("gen_info", "General Clearance Info", "Common", 0.25),
-        ("clear_at_select", "Clear at:", "Common", 0.25),
-        ("cost_estimate", "Clearance Cost Estimate", "Common", 0.25),
-        ("delivery_order", "Delivery Order", "Common", 1.0),
-        ("customs_cert", "Customs Certificate Entry", "Common", 0.5),
-        # Track 1: Port
-        ("cont_move", "Containers Move Process", "Port", 2.0),
-        ("ssmo_file", "SSMO File Process", "Port", 1.0),
-        ("customs_exam", "Customs Examination (Form 48)", "Port", 1.0),
-        ("customs_lab", "Customs Lab", "Port", 1.0),
-        ("ssmo_exam", "SSMO Examination", "Port", 1.0),
-        ("customs_eval", "Customs Evaluation", "Port", 1.0),
-        ("spc_bill", "SPC Bill", "Port", 1.0),
-        ("truck_permit", "Truck Entry Permit", "Port", 1.0),
-        # Track 2: Free Zone
-        ("fz_deposit_req", "FZ Deposit Request", "Free Zone", 1.0),
-        ("fz_customs_insp", "Customs Inspection (FZ)", "Free Zone", 1.0),
-        ("fz_spc_police", "SPC Bill & Police Security", "Free Zone", 1.0),
-        ("fz_receive_cargo", "Receive Cargo at FZ", "Free Zone", 1.0),
-        # Final Step
+        ("gen_info", "General Clearance Info", "Common", 0.25, "{}"),
+        ("clear_at_select", "Clear at:", "Common", 0.25, "{}"),
+        (
+            "cost_estimate",
+            "Clearance Cost Estimate",
+            "Common",
+            0.25,
+            json.dumps({"value": 500000.0}),
+        ),
+        (
+            "delivery_order",
+            "Delivery Order",
+            "Common",
+            1.0,
+            json.dumps({"do_fees": 150000.0}),
+        ),
+        (
+            "customs_cert",
+            "Customs Certificate Entry",
+            "Common",
+            0.5,
+            json.dumps({"scuda_no": "SCUDA-99182"}),
+        ),
+        (
+            "cont_move",
+            "Containers Move Process",
+            "Port",
+            2.0,
+            json.dumps({"bill_amount": 250000.0}),
+        ),
+        (
+            "ssmo_file",
+            "SSMO File Process",
+            "Port",
+            1.0,
+            json.dumps({"bill_amount": 100000.0}),
+        ),
+        (
+            "customs_exam",
+            "Customs Examination (Form 48)",
+            "Port",
+            1.0,
+            "{}",
+        ),
+        (
+            "customs_lab",
+            "Customs Lab",
+            "Port",
+            1.0,
+            json.dumps({"lab_fees": 75000.0, "lab_required": "Yes"}),
+        ),
+        ("ssmo_exam", "SSMO Examination", "Port", 1.0, "{}"),
+        (
+            "customs_eval",
+            "Customs Evaluation",
+            "Port",
+            1.0,
+            json.dumps({"customs_value": 1250000.0}),
+        ),
+        (
+            "spc_bill",
+            "SPC Bill",
+            "Port",
+            1.0,
+            json.dumps({"spc_bill_value": 300000.0}),
+        ),
+        ("truck_permit", "Truck Entry Permit", "Port", 1.0, "{}"),
+        ("fz_deposit_req", "FZ Deposit Request", "Free Zone", 1.0, "{}"),
+        (
+            "fz_customs_insp",
+            "Customs Inspection (FZ)",
+            "Free Zone",
+            1.0,
+            "{}",
+        ),
+        (
+            "fz_spc_police",
+            "SPC Bill & Police Security",
+            "Free Zone",
+            1.0,
+            json.dumps({"spc_bill_value": 350000.0}),
+        ),
+        (
+            "fz_receive_cargo",
+            "Receive Cargo at FZ",
+            "Free Zone",
+            1.0,
+            "{}",
+        ),
         (
             "final_clearance_complete",
             "Actual Clearance Completion",
             "Common",
             0.25,
+            "{}",
         ),
     ]
 
-    for key, name, track, sla in default_processes:
+    for key, name, track, sla, data_json in default_processes:
         cursor.execute(
             """
             INSERT INTO process_tasks (shipment_id, process_key, process_name, track, target_sla, status, data_json)
-            VALUES (?, ?, ?, ?, ?, 'Pending', '{}')
+            VALUES (?, ?, ?, ?, ?, 'Pending', ?)
         """,
-            (shipment_id, key, name, track, sla),
+            (shipment_id, key, name, track, sla, data_json),
         )
 
 
@@ -165,7 +231,7 @@ init_db()
 
 # --- 2. WORKFLOW ENGINE & DEPENDENCY LOGIC ---
 def evaluate_process_statuses(tasks_dict, clear_at_selection):
-    """Evaluates task activations dynamically based on workflow progress."""
+    """Evaluates process activations based on workflow progress."""
     status_map = {}
 
     def get_data(key):
@@ -183,7 +249,7 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
     bl_copy_done = bool(gen_data.get("bl_copy_receipt_date"))
     orig_ship_done = bool(gen_data.get("orig_shipment_rec_date"))
 
-    # 2. Clear at: Active when "Original Shipment Set Received Date" completed
+    # 2. Clear at: Active when "Original Set Received Date" completed
     status_map["clear_at_select"] = (
         "Completed"
         if is_done("clear_at_select")
@@ -197,7 +263,7 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
         else ("Active" if bl_copy_done else "Pending")
     )
 
-    # 4. Delivery Order: Active when "Original Shipment Set Received Date" completed
+    # 4. Delivery Order: Active when "Original Set Received Date" completed
     status_map["delivery_order"] = (
         "Completed"
         if is_done("delivery_order")
@@ -211,7 +277,7 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
         else ("Active" if is_done("delivery_order") else "Pending")
     )
 
-    # --- TRACK 1: PORT CLEARANCE ---
+    # --- PORT TRACK ---
     if clear_at_selection == "Port":
         cert_done = is_done("customs_cert")
 
@@ -274,7 +340,7 @@ def evaluate_process_statuses(tasks_dict, clear_at_selection):
             else ("Active" if is_done("truck_permit") else "Pending")
         )
 
-    # --- TRACK 2: FREE ZONE ---
+    # --- FREE ZONE TRACK ---
     elif clear_at_selection == "Free Zone":
         status_map["fz_deposit_req"] = (
             "Completed" if is_done("fz_deposit_req") else "Active"
@@ -409,698 +475,714 @@ if choice == "📋 Clearance Task Engine":
 
             if status == "Locked":
                 st.info(
-                    "✋ This process is currently locked. Complete the preceding"
-                    " prerequisite process step to activate."
+                    "✋ This process is currently locked. Complete preceding"
+                    " prerequisite steps to activate."
                 )
                 continue
 
-            with st.form(key=f"form_{key}"):
-                updated_data = {}
+            # Render fields dynamically (outside form to allow real-time checkbox toggles)
+            updated_data = {}
 
-                # 1. General Clearance Info
-                if key == "gen_info":
-                    col1, col2 = st.columns(2)
-                    bl_rec = col1.date_input(
-                        "1. BL Copy Receipt Date",
-                        value=pd.to_datetime(
-                            task_data.get("bl_copy_receipt_date")
-                        ).date()
-                        if task_data.get("bl_copy_receipt_date")
-                        else None,
-                    )
-                    orig_rec = col2.date_input(
-                        "2. Original Shipment Set Received Date",
-                        value=pd.to_datetime(
-                            task_data.get("orig_shipment_rec_date")
-                        ).date()
-                        if task_data.get("orig_shipment_rec_date")
-                        else None,
-                    )
-
-                    lc_disabled = not bool(orig_rec)
-                    lc_no = st.text_input(
-                        "3. L/C No. (Activates when Original Set Received)",
-                        value=task_data.get("lc_no", ""),
-                        disabled=lc_disabled,
-                    )
-
-                    col3, col4 = st.columns(2)
-                    est_arr = col3.date_input(
-                        "4. Shipment Estimated Arrival Date",
-                        value=pd.to_datetime(
-                            shipment_data.get("est_arrival_date")
-                        ).date()
-                        if shipment_data.get("est_arrival_date")
-                        else date.today(),
-                    )
-                    act_arr = col4.date_input(
-                        "5. Shipment Actual Arrival Date",
-                        value=pd.to_datetime(
-                            shipment_data.get("act_arrival_date")
-                        ).date()
-                        if shipment_data.get("act_arrival_date")
-                        else None,
-                    )
-
-                    st.markdown("---")
-                    st.markdown("**6. Clearance Completion Estimate Date:**")
-                    col_est1, col_est2 = st.columns(2)
-
-                    with col_est1:
-                        manual_override = st.checkbox(
-                            "Manually Override Calculated Clearance Completion Estimate",
-                            value=bool(shipment_data.get("manual_override_est_date")),
-                            key=f"manual_override_cb_{shipment_id}",
-                        )
-
-                    with col_est2:
-                        existing_est_date = shipment_data.get("est_clearance_date")
-                        if existing_est_date and shipment_data.get("manual_override_est_date"):
-                            default_date = pd.to_datetime(existing_est_date).date()
-                        else:
-                            default_date = calculated_completion_est
-
-                        manual_est_clear_date = st.date_input(
-                            "Select Manual Clearance Completion Estimate Date",
-                            value=default_date,
-                            disabled=not manual_override,
-                            key=f"manual_date_input_{shipment_id}",
-                            help="Check the override box on the left to manually select custom clearance estimate date.",
-                        )
-
-                    if manual_override:
-                        est_clear_date = manual_est_clear_date
-                    else:
-                        est_clear_date = calculated_completion_est
-                        st.caption(
-                            f"ℹ️ Currently using auto-calculated target date:"
-                            f" **{calculated_completion_est.strftime('%Y-%m-%d')}**"
-                        )
-
-                    notes = st.text_area(
-                        "7. General Notes",
-                        value=shipment_data.get("notes", ""),
-                    )
-
-                    updated_data = {
-                        "bl_copy_receipt_date": bl_rec.isoformat()
-                        if bl_rec
-                        else None,
-                        "orig_shipment_rec_date": orig_rec.isoformat()
-                        if orig_rec
-                        else None,
-                        "lc_no": lc_no,
-                    }
-
-                # 2. Select Track / Clear at:
-                elif key == "clear_at_select":
-                    track_choice = st.selectbox(
-                        "Select Clearance Destination Track:",
-                        ["Port", "Free Zone"],
-                        index=0 if clear_at == "Port" else 1,
-                    )
-                    updated_data = {"clear_at": track_choice}
-
-                # 3. Clearance Cost Estimate
-                elif key == "cost_estimate":
-                    c1, c2 = st.columns(2)
-                    est_d = c1.date_input(
-                        "1. Estimate Date",
-                        value=pd.to_datetime(task_data.get("est_date")).date()
-                        if task_data.get("est_date")
-                        else None,
-                    )
-                    val_raw = c2.text_input(
-                        "2. Estimated Value (SDG)",
-                        value=format_amount(task_data.get("value", 0.0)),
-                        help="Formatted currency field (e.g. 500,000.00)",
-                    )
-                    val = parse_amount(val_raw)
-
-                    c3, c4 = st.columns(2)
-                    not_bu = c3.date_input(
-                        "3. Notify BU Date",
-                        value=pd.to_datetime(
-                            task_data.get("notify_bu_date")
-                        ).date()
-                        if task_data.get("notify_bu_date")
-                        else None,
-                    )
-                    amt_rec_d = c4.date_input(
-                        "4. Amount Received Date",
-                        value=pd.to_datetime(
-                            task_data.get("amount_received_date")
-                        ).date()
-                        if task_data.get("amount_received_date")
-                        else None,
-                    )
-
-                    updated_data = {
-                        "est_date": est_d.isoformat() if est_d else None,
-                        "value": val,
-                        "notify_bu_date": not_bu.isoformat()
-                        if not_bu
-                        else None,
-                        "amount_received_date": amt_rec_d.isoformat()
-                        if amt_rec_d
-                        else None,
-                    }
-
-                # 4. Delivery Order
-                elif key == "delivery_order":
-                    c1, c2 = st.columns(2)
-                    copy_do = c1.checkbox(
-                        "1. Copy of DO Collected",
-                        value=bool(task_data.get("copy_do")),
-                    )
-                    do_fees_raw = c2.text_input(
-                        "2. DO Fees (SDG)",
-                        value=format_amount(task_data.get("do_fees", 0.0)),
-                    )
-                    do_fees = parse_amount(do_fees_raw)
-
-                    c3, c4 = st.columns(2)
-                    settle_d = c3.date_input(
-                        "3. DO Fees Settled Date",
-                        value=pd.to_datetime(
-                            task_data.get("settled_date")
-                        ).date()
-                        if task_data.get("settled_date")
-                        else None,
-                    )
-                    rec_d = c4.date_input(
-                        "4. DO Received Date",
-                        value=pd.to_datetime(
-                            task_data.get("received_date")
-                        ).date()
-                        if task_data.get("received_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "copy_do": copy_do,
-                        "do_fees": do_fees,
-                        "settled_date": settle_d.isoformat()
-                        if settle_d
-                        else None,
-                        "received_date": rec_d.isoformat() if rec_d else None,
-                    }
-
-                # 5. Customs Certificate Entry
-                elif key == "customs_cert":
-                    c1, c2 = st.columns(2)
-                    entry_d = c1.date_input(
-                        "1. Entry Date",
-                        value=pd.to_datetime(task_data.get("entry_date")).date()
-                        if task_data.get("entry_date")
-                        else None,
-                    )
-                    scuda_no = c2.text_input(
-                        "2. SCUDA Declaration No.",
-                        value=task_data.get("scuda_no", ""),
-                    )
-                    updated_data = {
-                        "entry_date": entry_d.isoformat() if entry_d else None,
-                        "scuda_no": scuda_no,
-                    }
-
-                # 6. Containers Move Process
-                elif key == "cont_move":
-                    c1, c2, c3 = st.columns(3)
-                    req_d = c1.date_input(
-                        "1. Move Request Date",
-                        value=pd.to_datetime(
-                            task_data.get("request_date")
-                        ).date()
-                        if task_data.get("request_date")
-                        else None,
-                    )
-                    bill_raw = c2.text_input(
-                        "2. Bill Amount (SDG)",
-                        value=format_amount(task_data.get("bill_amount", 0.0)),
-                    )
-                    bill = parse_amount(bill_raw)
-
-                    set_d = c3.date_input(
-                        "3. Bill Settlement Date",
-                        value=pd.to_datetime(
-                            task_data.get("settlement_date")
-                        ).date()
-                        if task_data.get("settlement_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "request_date": req_d.isoformat() if req_d else None,
-                        "bill_amount": bill,
-                        "settlement_date": set_d.isoformat() if set_d else None,
-                    }
-
-                # 7. SSMO File Process
-                elif key == "ssmo_file":
-                    c1, c2, c3 = st.columns(3)
-                    req_d = c1.date_input(
-                        "1. Move Request Date",
-                        value=pd.to_datetime(
-                            task_data.get("request_date")
-                        ).date()
-                        if task_data.get("request_date")
-                        else None,
-                    )
-                    bill_raw = c2.text_input(
-                        "2. Bill Amount (SDG)",
-                        value=format_amount(task_data.get("bill_amount", 0.0)),
-                    )
-                    bill = parse_amount(bill_raw)
-
-                    set_d = c3.date_input(
-                        "3. Bill Settlement Date",
-                        value=pd.to_datetime(
-                            task_data.get("settlement_date")
-                        ).date()
-                        if task_data.get("settlement_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "request_date": req_d.isoformat() if req_d else None,
-                        "bill_amount": bill,
-                        "settlement_date": set_d.isoformat() if set_d else None,
-                    }
-
-                # 8. Customs Examination (Form 48)
-                elif key == "customs_exam":
-                    c1, c2 = st.columns(2)
-                    st_d = c1.date_input(
-                        "1. Examination Start Date",
-                        value=pd.to_datetime(task_data.get("start_date")).date()
-                        if task_data.get("start_date")
-                        else None,
-                    )
-                    comp_d = c2.date_input(
-                        "2. Examination Completed Date",
-                        value=pd.to_datetime(
-                            task_data.get("completion_date")
-                        ).date()
-                        if task_data.get("completion_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "start_date": st_d.isoformat() if st_d else None,
-                        "completion_date": comp_d.isoformat()
-                        if comp_d
-                        else None,
-                    }
-
-                # 9. Customs Lab
-                elif key == "customs_lab":
-                    lab_req = st.radio(
-                        "1. Customs Lab Required?",
-                        ["No", "Yes"],
-                        index=1
-                        if task_data.get("lab_required") == "Yes"
-                        else 0,
-                    )
-                    is_lab_yes = lab_req == "Yes"
-
-                    c1, c2, c3 = st.columns(3)
-                    lab_fees_raw = c1.text_input(
-                        "2. Customs Lab Fees (SDG)",
-                        value=format_amount(task_data.get("lab_fees", 0.0)),
-                        disabled=not is_lab_yes,
-                    )
-                    lab_fees = parse_amount(lab_fees_raw)
-
-                    pay_d = c2.date_input(
-                        "3. Fees Payment Date",
-                        value=pd.to_datetime(
-                            task_data.get("payment_date")
-                        ).date()
-                        if task_data.get("payment_date")
-                        else None,
-                        disabled=not is_lab_yes,
-                    )
-                    res_d = c3.date_input(
-                        "4. Lab Result Issuance Date",
-                        value=pd.to_datetime(
-                            task_data.get("result_date")
-                        ).date()
-                        if task_data.get("result_date")
-                        else None,
-                        disabled=not is_lab_yes,
-                    )
-                    updated_data = {
-                        "lab_required": lab_req,
-                        "lab_fees": lab_fees,
-                        "payment_date": pay_d.isoformat() if pay_d else None,
-                        "result_date": res_d.isoformat() if res_d else None,
-                    }
-
-                # 10. SSMO Examination
-                elif key == "ssmo_exam":
-                    c1, c2 = st.columns(2)
-                    st_d = c1.date_input(
-                        "1. Examination Start Date",
-                        value=pd.to_datetime(task_data.get("start_date")).date()
-                        if task_data.get("start_date")
-                        else None,
-                    )
-                    iss_d = c2.date_input(
-                        "2. SSMO Certificate Issuance Date",
-                        value=pd.to_datetime(
-                            task_data.get("issuance_date")
-                        ).date()
-                        if task_data.get("issuance_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "start_date": st_d.isoformat() if st_d else None,
-                        "issuance_date": iss_d.isoformat() if iss_d else None,
-                    }
-
-                # 11. Customs Evaluation
-                elif key == "customs_eval":
-                    c1, c2 = st.columns(2)
-                    eval_d = c1.date_input(
-                        "1. Evaluation Date",
-                        value=pd.to_datetime(task_data.get("eval_date")).date()
-                        if task_data.get("eval_date")
-                        else None,
-                    )
-                    cust_val_raw = c2.text_input(
-                        "2. Customs Value (SDG)",
-                        value=format_amount(task_data.get("customs_value", 0.0)),
-                    )
-                    cust_val = parse_amount(cust_val_raw)
-
-                    c3, c4 = st.columns(2)
-                    settle_d = c3.date_input(
-                        "3. Settlement Date",
-                        value=pd.to_datetime(
-                            task_data.get("settlement_date")
-                        ).date()
-                        if task_data.get("settlement_date")
-                        else None,
-                    )
-                    exit_d = c4.date_input(
-                        "4. Release & Exit Pass Date",
-                        value=pd.to_datetime(
-                            task_data.get("exit_pass_date")
-                        ).date()
-                        if task_data.get("exit_pass_date")
-                        else None,
-                    )
-
-                    updated_data = {
-                        "eval_date": eval_d.isoformat() if eval_d else None,
-                        "customs_value": cust_val,
-                        "settlement_date": settle_d.isoformat()
-                        if settle_d
-                        else None,
-                        "exit_pass_date": exit_d.isoformat()
-                        if exit_d
-                        else None,
-                    }
-
-                # 12. SPC Bill
-                elif key == "spc_bill":
-                    c1, c2, c3 = st.columns(3)
-                    req_d = c1.date_input(
-                        "1. Request Date",
-                        value=pd.to_datetime(
-                            task_data.get("request_date")
-                        ).date()
-                        if task_data.get("request_date")
-                        else None,
-                    )
-                    spc_val_raw = c2.text_input(
-                        "2. SPC Bill Value (SDG)",
-                        value=format_amount(task_data.get("spc_bill_value", 0.0)),
-                    )
-                    spc_val = parse_amount(spc_val_raw)
-
-                    set_d = c3.date_input(
-                        "3. SPC Bill Settlement Date",
-                        value=pd.to_datetime(
-                            task_data.get("settlement_date")
-                        ).date()
-                        if task_data.get("settlement_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "request_date": req_d.isoformat() if req_d else None,
-                        "spc_bill_value": spc_val,
-                        "settlement_date": set_d.isoformat() if set_d else None,
-                    }
-
-                # 13. Truck Entry Permit
-                elif key == "truck_permit":
-                    c1, c2 = st.columns(2)
-                    perm_d = c1.date_input(
-                        "1. Truck Entry Permit Date",
-                        value=pd.to_datetime(
-                            task_data.get("permit_date")
-                        ).date()
-                        if task_data.get("permit_date")
-                        else None,
-                    )
-                    ret_d = c2.date_input(
-                        "2. Return Containers Date",
-                        value=pd.to_datetime(
-                            task_data.get("return_containers_date")
-                        ).date()
-                        if task_data.get("return_containers_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "permit_date": perm_d.isoformat() if perm_d else None,
-                        "return_containers_date": ret_d.isoformat()
-                        if ret_d
-                        else None,
-                    }
-
-                # 14. Actual Clearance Completion (Final Step)
-                elif key == "final_clearance_complete":
-                    act_clear_d = st.date_input(
-                        "1. Actual Clearance Completion Date",
-                        value=pd.to_datetime(
-                            task_data.get("act_clearance_date")
-                        ).date()
-                        if task_data.get("act_clearance_date")
-                        else date.today(),
-                    )
-                    final_notes = st.text_area(
-                        "2. Final Clearance & Handover Notes",
-                        value=task_data.get("final_notes", ""),
-                    )
-                    updated_data = {
-                        "act_clearance_date": act_clear_d.isoformat()
-                        if act_clear_d
-                        else None,
-                        "final_notes": final_notes,
-                    }
-
-                # Track 2 - FZ Specific Form Tasks
-                elif key == "fz_deposit_req":
-                    c1, c2 = st.columns(2)
-                    dep_d = c1.date_input(
-                        "1. Deposit Request Date",
-                        value=pd.to_datetime(
-                            task_data.get("deposit_request_date")
-                        ).date()
-                        if task_data.get("deposit_request_date")
-                        else None,
-                    )
-                    app_d = c2.date_input(
-                        "2. Request Approval Date",
-                        value=pd.to_datetime(
-                            task_data.get("approval_date")
-                        ).date()
-                        if task_data.get("approval_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "deposit_request_date": dep_d.isoformat()
-                        if dep_d
-                        else None,
-                        "approval_date": app_d.isoformat() if app_d else None,
-                    }
-
-                elif key == "fz_customs_insp":
-                    insp_d = st.date_input(
-                        "1. Inspection Date",
-                        value=pd.to_datetime(
-                            task_data.get("inspection_date")
-                        ).date()
-                        if task_data.get("inspection_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "inspection_date": insp_d.isoformat()
-                        if insp_d
-                        else None
-                    }
-
-                elif key == "fz_spc_police":
-                    c1, c2 = st.columns(2)
-                    req_d = c1.date_input(
-                        "1. Request Date",
-                        value=pd.to_datetime(
-                            task_data.get("request_date")
-                        ).date()
-                        if task_data.get("request_date")
-                        else None,
-                    )
-                    spc_val_raw = c2.text_input(
-                        "2. SPC Bill Value (SDG)",
-                        value=format_amount(task_data.get("spc_bill_value", 0.0)),
-                    )
-                    spc_val = parse_amount(spc_val_raw)
-
-                    c3, c4 = st.columns(2)
-                    set_d = c3.date_input(
-                        "3. SPC Bill Settlement Date",
-                        value=pd.to_datetime(
-                            task_data.get("settlement_date")
-                        ).date()
-                        if task_data.get("settlement_date")
-                        else None,
-                    )
-                    pol_d = c4.date_input(
-                        "4. Police Security Appointed Date",
-                        value=pd.to_datetime(
-                            task_data.get("police_appointed_date")
-                        ).date()
-                        if task_data.get("police_appointed_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "request_date": req_d.isoformat() if req_d else None,
-                        "spc_bill_value": spc_val,
-                        "settlement_date": set_d.isoformat() if set_d else None,
-                        "police_appointed_date": pol_d.isoformat()
-                        if pol_d
-                        else None,
-                    }
-
-                elif key == "fz_receive_cargo":
-                    c1, c2 = st.columns(2)
-                    rec_d = c1.date_input(
-                        "1. Containers Received Date",
-                        value=pd.to_datetime(
-                            task_data.get("containers_received_date")
-                        ).date()
-                        if task_data.get("containers_received_date")
-                        else None,
-                    )
-                    ret_d = c2.date_input(
-                        "2. Containers Returned Date",
-                        value=pd.to_datetime(
-                            task_data.get("containers_returned_date")
-                        ).date()
-                        if task_data.get("containers_returned_date")
-                        else None,
-                    )
-                    updated_data = {
-                        "containers_received_date": rec_d.isoformat()
-                        if rec_d
-                        else None,
-                        "containers_returned_date": ret_d.isoformat()
-                        if ret_d
-                        else None,
-                    }
-
-                # Generic Fallback Renderer
-                else:
-                    d1 = st.date_input(
-                        "Request / Start Date",
-                        value=pd.to_datetime(task_data.get("start_date")).date()
-                        if task_data.get("start_date")
-                        else None,
-                    )
-                    d2 = st.date_input(
-                        "Completion / Result Date",
-                        value=pd.to_datetime(
-                            task_data.get("completion_date")
-                        ).date()
-                        if task_data.get("completion_date")
-                        else None,
-                    )
-                    val_raw = st.text_input(
-                        "Amount (SDG)",
-                        value=format_amount(task_data.get("amount", 0.0)),
-                    )
-                    val = parse_amount(val_raw)
-
-                    updated_data = {
-                        "start_date": d1.isoformat() if d1 else None,
-                        "completion_date": d2.isoformat() if d2 else None,
-                        "amount": val,
-                    }
-
-                st.markdown("---")
-                c_submit, c_mark = st.columns([2, 1])
-                submitted = c_submit.form_submit_button("💾 Save Step Inputs")
-                mark_complete = c_mark.form_submit_button(
-                    "✅ Mark Task as Complete"
+            # 1. General Clearance Info
+            if key == "gen_info":
+                col1, col2 = st.columns(2)
+                bl_rec = col1.date_input(
+                    "1. BL Copy Receipt Date",
+                    value=pd.to_datetime(
+                        task_data.get("bl_copy_receipt_date")
+                    ).date()
+                    if task_data.get("bl_copy_receipt_date")
+                    else None,
+                    key=f"bl_rec_{shipment_id}",
+                )
+                orig_rec = col2.date_input(
+                    "2. Original Shipment Set Received Date",
+                    value=pd.to_datetime(
+                        task_data.get("orig_shipment_rec_date")
+                    ).date()
+                    if task_data.get("orig_shipment_rec_date")
+                    else None,
+                    key=f"orig_rec_{shipment_id}",
                 )
 
-                if submitted or mark_complete:
-                    new_status = "Completed" if mark_complete else status
-                    now_str = (
-                        date.today().isoformat()
-                        if mark_complete
-                        else task.get("completed_at")
+                lc_disabled = not bool(orig_rec)
+                lc_no = st.text_input(
+                    "3. L/C No. (Activates when Original Set Received)",
+                    value=task_data.get("lc_no", ""),
+                    disabled=lc_disabled,
+                    key=f"lc_no_{shipment_id}",
+                )
+
+                col3, col4 = st.columns(2)
+                est_arr = col3.date_input(
+                    "4. Shipment Estimated Arrival Date",
+                    value=pd.to_datetime(
+                        shipment_data.get("est_arrival_date")
+                    ).date()
+                    if shipment_data.get("est_arrival_date")
+                    else date.today(),
+                    key=f"est_arr_{shipment_id}",
+                )
+                act_arr = col4.date_input(
+                    "5. Shipment Actual Arrival Date",
+                    value=pd.to_datetime(
+                        shipment_data.get("act_arrival_date")
+                    ).date()
+                    if shipment_data.get("act_arrival_date")
+                    else None,
+                    key=f"act_arr_{shipment_id}",
+                )
+
+                st.markdown("---")
+                st.markdown("**6. Clearance Completion Estimate Date:**")
+                col_est1, col_est2 = st.columns(2)
+
+                # Direct real-time checkbox toggle state
+                override_key = f"manual_override_cb_{shipment_id}"
+                if override_key not in st.session_state:
+                    st.session_state[override_key] = bool(
+                        shipment_data.get("manual_override_est_date")
                     )
 
+                with col_est1:
+                    manual_override = st.checkbox(
+                        "Manually Override Calculated Clearance Completion Estimate",
+                        value=st.session_state[override_key],
+                        key=override_key,
+                    )
+
+                with col_est2:
+                    existing_est_date = shipment_data.get("est_clearance_date")
+                    if existing_est_date and manual_override:
+                        default_date = pd.to_datetime(existing_est_date).date()
+                    else:
+                        default_date = calculated_completion_est
+
+                    # Date input enables INSTANTLY when manual_override is checked
+                    manual_est_clear_date = st.date_input(
+                        "Select Manual Clearance Completion Estimate Date",
+                        value=default_date,
+                        disabled=not manual_override,
+                        key=f"manual_date_input_{shipment_id}",
+                        help="Tick the checkbox to enable custom clearance date selection.",
+                    )
+
+                if manual_override:
+                    est_clear_date = manual_est_clear_date
+                else:
+                    est_clear_date = calculated_completion_est
+                    st.caption(
+                        f"ℹ️ Currently using auto-calculated date:"
+                        f" **{calculated_completion_est.strftime('%Y-%m-%d')}**"
+                    )
+
+                notes = st.text_area(
+                    "7. General Notes",
+                    value=shipment_data.get("notes", ""),
+                    key=f"notes_{shipment_id}",
+                )
+
+                updated_data = {
+                    "bl_copy_receipt_date": bl_rec.isoformat()
+                    if bl_rec
+                    else None,
+                    "orig_shipment_rec_date": orig_rec.isoformat()
+                    if orig_rec
+                    else None,
+                    "lc_no": lc_no,
+                }
+
+            # 2. Select Track / Clear at:
+            elif key == "clear_at_select":
+                track_choice = st.selectbox(
+                    "Select Clearance Destination Track:",
+                    ["Port", "Free Zone"],
+                    index=0 if clear_at == "Port" else 1,
+                    key=f"track_choice_{shipment_id}",
+                )
+                updated_data = {"clear_at": track_choice}
+
+            # 3. Clearance Cost Estimate
+            elif key == "cost_estimate":
+                c1, c2 = st.columns(2)
+                est_d = c1.date_input(
+                    "1. Estimate Date",
+                    value=pd.to_datetime(task_data.get("est_date")).date()
+                    if task_data.get("est_date")
+                    else None,
+                    key=f"est_d_{shipment_id}",
+                )
+
+                val_raw = c2.text_input(
+                    "2. Estimated Value (SDG)",
+                    value=format_amount(task_data.get("value", 500000.0)),
+                    key=f"cost_val_{shipment_id}",
+                )
+                val = parse_amount(val_raw)
+
+                c3, c4 = st.columns(2)
+                not_bu = c3.date_input(
+                    "3. Notify BU Date",
+                    value=pd.to_datetime(
+                        task_data.get("notify_bu_date")
+                    ).date()
+                    if task_data.get("notify_bu_date")
+                    else None,
+                    key=f"not_bu_{shipment_id}",
+                )
+                amt_rec_d = c4.date_input(
+                    "4. Amount Received Date",
+                    value=pd.to_datetime(
+                        task_data.get("amount_received_date")
+                    ).date()
+                    if task_data.get("amount_received_date")
+                    else None,
+                    key=f"amt_rec_{shipment_id}",
+                )
+
+                updated_data = {
+                    "est_date": est_d.isoformat() if est_d else None,
+                    "value": val,
+                    "notify_bu_date": not_bu.isoformat() if not_bu else None,
+                    "amount_received_date": amt_rec_d.isoformat()
+                    if amt_rec_d
+                    else None,
+                }
+
+            # 4. Delivery Order
+            elif key == "delivery_order":
+                c1, c2 = st.columns(2)
+                copy_do = c1.checkbox(
+                    "1. Copy of DO Collected",
+                    value=bool(task_data.get("copy_do")),
+                    key=f"copy_do_{shipment_id}",
+                )
+
+                do_fees_raw = c2.text_input(
+                    "2. DO Fees (SDG)",
+                    value=format_amount(task_data.get("do_fees", 150000.0)),
+                    key=f"do_fees_{shipment_id}",
+                )
+                do_fees = parse_amount(do_fees_raw)
+
+                c3, c4 = st.columns(2)
+                settle_d = c3.date_input(
+                    "3. DO Fees Settled Date",
+                    value=pd.to_datetime(task_data.get("settled_date")).date()
+                    if task_data.get("settled_date")
+                    else None,
+                    key=f"do_settle_{shipment_id}",
+                )
+                rec_d = c4.date_input(
+                    "4. DO Received Date",
+                    value=pd.to_datetime(task_data.get("received_date")).date()
+                    if task_data.get("received_date")
+                    else None,
+                    key=f"do_rec_{shipment_id}",
+                )
+                updated_data = {
+                    "copy_do": copy_do,
+                    "do_fees": do_fees,
+                    "settled_date": settle_d.isoformat() if settle_d else None,
+                    "received_date": rec_d.isoformat() if rec_d else None,
+                }
+
+            # 5. Customs Certificate Entry
+            elif key == "customs_cert":
+                c1, c2 = st.columns(2)
+                entry_d = c1.date_input(
+                    "1. Entry Date",
+                    value=pd.to_datetime(task_data.get("entry_date")).date()
+                    if task_data.get("entry_date")
+                    else None,
+                    key=f"cert_entry_{shipment_id}",
+                )
+                scuda_no = c2.text_input(
+                    "2. SCUDA Declaration No.",
+                    value=task_data.get("scuda_no", "SCUDA-99182"),
+                    key=f"scuda_{shipment_id}",
+                )
+                updated_data = {
+                    "entry_date": entry_d.isoformat() if entry_d else None,
+                    "scuda_no": scuda_no,
+                }
+
+            # 6. Containers Move Process
+            elif key == "cont_move":
+                c1, c2, c3 = st.columns(3)
+                req_d = c1.date_input(
+                    "1. Move Request Date",
+                    value=pd.to_datetime(task_data.get("request_date")).date()
+                    if task_data.get("request_date")
+                    else None,
+                    key=f"cont_req_{shipment_id}",
+                )
+                bill_raw = c2.text_input(
+                    "2. Bill Amount (SDG)",
+                    value=format_amount(
+                        task_data.get("bill_amount", 250000.0)
+                    ),
+                    key=f"cont_bill_{shipment_id}",
+                )
+                bill = parse_amount(bill_raw)
+
+                set_d = c3.date_input(
+                    "3. Bill Settlement Date",
+                    value=pd.to_datetime(
+                        task_data.get("settlement_date")
+                    ).date()
+                    if task_data.get("settlement_date")
+                    else None,
+                    key=f"cont_set_{shipment_id}",
+                )
+                updated_data = {
+                    "request_date": req_d.isoformat() if req_d else None,
+                    "bill_amount": bill,
+                    "settlement_date": set_d.isoformat() if set_d else None,
+                }
+
+            # 7. SSMO File Process
+            elif key == "ssmo_file":
+                c1, c2, c3 = st.columns(3)
+                req_d = c1.date_input(
+                    "1. Move Request Date",
+                    value=pd.to_datetime(task_data.get("request_date")).date()
+                    if task_data.get("request_date")
+                    else None,
+                    key=f"ssmo_req_{shipment_id}",
+                )
+                bill_raw = c2.text_input(
+                    "2. Bill Amount (SDG)",
+                    value=format_amount(
+                        task_data.get("bill_amount", 100000.0)
+                    ),
+                    key=f"ssmo_bill_{shipment_id}",
+                )
+                bill = parse_amount(bill_raw)
+
+                set_d = c3.date_input(
+                    "3. Bill Settlement Date",
+                    value=pd.to_datetime(
+                        task_data.get("settlement_date")
+                    ).date()
+                    if task_data.get("settlement_date")
+                    else None,
+                    key=f"ssmo_set_{shipment_id}",
+                )
+                updated_data = {
+                    "request_date": req_d.isoformat() if req_d else None,
+                    "bill_amount": bill,
+                    "settlement_date": set_d.isoformat() if set_d else None,
+                }
+
+            # 8. Customs Examination (Form 48)
+            elif key == "customs_exam":
+                c1, c2 = st.columns(2)
+                st_d = c1.date_input(
+                    "1. Examination Start Date",
+                    value=pd.to_datetime(task_data.get("start_date")).date()
+                    if task_data.get("start_date")
+                    else None,
+                    key=f"exam_st_{shipment_id}",
+                )
+                comp_d = c2.date_input(
+                    "2. Examination Completed Date",
+                    value=pd.to_datetime(
+                        task_data.get("completion_date")
+                    ).date()
+                    if task_data.get("completion_date")
+                    else None,
+                    key=f"exam_comp_{shipment_id}",
+                )
+                updated_data = {
+                    "start_date": st_d.isoformat() if st_d else None,
+                    "completion_date": comp_d.isoformat() if comp_d else None,
+                }
+
+            # 9. Customs Lab
+            elif key == "customs_lab":
+                lab_req = st.radio(
+                    "1. Customs Lab Required?",
+                    ["No", "Yes"],
+                    index=1
+                    if task_data.get("lab_required", "Yes") == "Yes"
+                    else 0,
+                    key=f"lab_req_{shipment_id}",
+                )
+                is_lab_yes = lab_req == "Yes"
+
+                c1, c2, c3 = st.columns(3)
+                lab_fees_raw = c1.text_input(
+                    "2. Customs Lab Fees (SDG)",
+                    value=format_amount(task_data.get("lab_fees", 75000.0)),
+                    disabled=not is_lab_yes,
+                    key=f"lab_fees_{shipment_id}",
+                )
+                lab_fees = parse_amount(lab_fees_raw)
+
+                pay_d = c2.date_input(
+                    "3. Fees Payment Date",
+                    value=pd.to_datetime(task_data.get("payment_date")).date()
+                    if task_data.get("payment_date")
+                    else None,
+                    disabled=not is_lab_yes,
+                    key=f"lab_pay_{shipment_id}",
+                )
+                res_d = c3.date_input(
+                    "4. Lab Result Issuance Date",
+                    value=pd.to_datetime(task_data.get("result_date")).date()
+                    if task_data.get("result_date")
+                    else None,
+                    disabled=not is_lab_yes,
+                    key=f"lab_res_{shipment_id}",
+                )
+                updated_data = {
+                    "lab_required": lab_req,
+                    "lab_fees": lab_fees,
+                    "payment_date": pay_d.isoformat() if pay_d else None,
+                    "result_date": res_d.isoformat() if res_d else None,
+                }
+
+            # 10. SSMO Examination
+            elif key == "ssmo_exam":
+                c1, c2 = st.columns(2)
+                st_d = c1.date_input(
+                    "1. Examination Start Date",
+                    value=pd.to_datetime(task_data.get("start_date")).date()
+                    if task_data.get("start_date")
+                    else None,
+                    key=f"ssmo_ex_st_{shipment_id}",
+                )
+                iss_d = c2.date_input(
+                    "2. SSMO Certificate Issuance Date",
+                    value=pd.to_datetime(
+                        task_data.get("issuance_date")
+                    ).date()
+                    if task_data.get("issuance_date")
+                    else None,
+                    key=f"ssmo_iss_{shipment_id}",
+                )
+                updated_data = {
+                    "start_date": st_d.isoformat() if st_d else None,
+                    "issuance_date": iss_d.isoformat() if iss_d else None,
+                }
+
+            # 11. Customs Evaluation
+            elif key == "customs_eval":
+                c1, c2 = st.columns(2)
+                eval_d = c1.date_input(
+                    "1. Evaluation Date",
+                    value=pd.to_datetime(task_data.get("eval_date")).date()
+                    if task_data.get("eval_date")
+                    else None,
+                    key=f"eval_d_{shipment_id}",
+                )
+
+                cust_val_raw = c2.text_input(
+                    "2. Customs Value (SDG)",
+                    value=format_amount(
+                        task_data.get("customs_value", 1250000.0)
+                    ),
+                    key=f"cust_val_{shipment_id}",
+                )
+                cust_val = parse_amount(cust_val_raw)
+
+                c3, c4 = st.columns(2)
+                settle_d = c3.date_input(
+                    "3. Settlement Date",
+                    value=pd.to_datetime(
+                        task_data.get("settlement_date")
+                    ).date()
+                    if task_data.get("settlement_date")
+                    else None,
+                    key=f"eval_set_{shipment_id}",
+                )
+                exit_d = c4.date_input(
+                    "4. Release & Exit Pass Date",
+                    value=pd.to_datetime(
+                        task_data.get("exit_pass_date")
+                    ).date()
+                    if task_data.get("exit_pass_date")
+                    else None,
+                    key=f"exit_pass_{shipment_id}",
+                )
+
+                updated_data = {
+                    "eval_date": eval_d.isoformat() if eval_d else None,
+                    "customs_value": cust_val,
+                    "settlement_date": settle_d.isoformat()
+                    if settle_d
+                    else None,
+                    "exit_pass_date": exit_d.isoformat() if exit_d else None,
+                }
+
+            # 12. SPC Bill
+            elif key == "spc_bill":
+                c1, c2, c3 = st.columns(3)
+                req_d = c1.date_input(
+                    "1. Request Date",
+                    value=pd.to_datetime(task_data.get("request_date")).date()
+                    if task_data.get("request_date")
+                    else None,
+                    key=f"spc_req_{shipment_id}",
+                )
+
+                spc_val_raw = c2.text_input(
+                    "2. SPC Bill Value (SDG)",
+                    value=format_amount(
+                        task_data.get("spc_bill_value", 300000.0)
+                    ),
+                    key=f"spc_val_{shipment_id}",
+                )
+                spc_val = parse_amount(spc_val_raw)
+
+                set_d = c3.date_input(
+                    "3. SPC Bill Settlement Date",
+                    value=pd.to_datetime(
+                        task_data.get("settlement_date")
+                    ).date()
+                    if task_data.get("settlement_date")
+                    else None,
+                    key=f"spc_set_{shipment_id}",
+                )
+                updated_data = {
+                    "request_date": req_d.isoformat() if req_d else None,
+                    "spc_bill_value": spc_val,
+                    "settlement_date": set_d.isoformat() if set_d else None,
+                }
+
+            # 13. Truck Entry Permit
+            elif key == "truck_permit":
+                c1, c2 = st.columns(2)
+                perm_d = c1.date_input(
+                    "1. Truck Entry Permit Date",
+                    value=pd.to_datetime(task_data.get("permit_date")).date()
+                    if task_data.get("permit_date")
+                    else None,
+                    key=f"truck_perm_{shipment_id}",
+                )
+                ret_d = c2.date_input(
+                    "2. Return Containers Date",
+                    value=pd.to_datetime(
+                        task_data.get("return_containers_date")
+                    ).date()
+                    if task_data.get("return_containers_date")
+                    else None,
+                    key=f"truck_ret_{shipment_id}",
+                )
+                updated_data = {
+                    "permit_date": perm_d.isoformat() if perm_d else None,
+                    "return_containers_date": ret_d.isoformat()
+                    if ret_d
+                    else None,
+                }
+
+            # 14. Actual Clearance Completion
+            elif key == "final_clearance_complete":
+                act_clear_d = st.date_input(
+                    "1. Actual Clearance Completion Date",
+                    value=pd.to_datetime(
+                        task_data.get("act_clearance_date")
+                    ).date()
+                    if task_data.get("act_clearance_date")
+                    else date.today(),
+                    key=f"final_date_{shipment_id}",
+                )
+                final_notes = st.text_area(
+                    "2. Final Clearance & Handover Notes",
+                    value=task_data.get("final_notes", ""),
+                    key=f"final_notes_{shipment_id}",
+                )
+                updated_data = {
+                    "act_clearance_date": act_clear_d.isoformat()
+                    if act_clear_d
+                    else None,
+                    "final_notes": final_notes,
+                }
+
+            # Free Zone Specific
+            elif key == "fz_deposit_req":
+                c1, c2 = st.columns(2)
+                dep_d = c1.date_input(
+                    "1. Deposit Request Date",
+                    value=pd.to_datetime(
+                        task_data.get("deposit_request_date")
+                    ).date()
+                    if task_data.get("deposit_request_date")
+                    else None,
+                    key=f"fz_dep_{shipment_id}",
+                )
+                app_d = c2.date_input(
+                    "2. Request Approval Date",
+                    value=pd.to_datetime(task_data.get("approval_date")).date()
+                    if task_data.get("approval_date")
+                    else None,
+                    key=f"fz_app_{shipment_id}",
+                )
+                updated_data = {
+                    "deposit_request_date": dep_d.isoformat()
+                    if dep_d
+                    else None,
+                    "approval_date": app_d.isoformat() if app_d else None,
+                }
+
+            elif key == "fz_customs_insp":
+                insp_d = st.date_input(
+                    "1. Inspection Date",
+                    value=pd.to_datetime(
+                        task_data.get("inspection_date")
+                    ).date()
+                    if task_data.get("inspection_date")
+                    else None,
+                    key=f"fz_insp_{shipment_id}",
+                )
+                updated_data = {
+                    "inspection_date": insp_d.isoformat() if insp_d else None
+                }
+
+            elif key == "fz_spc_police":
+                c1, c2 = st.columns(2)
+                req_d = c1.date_input(
+                    "1. Request Date",
+                    value=pd.to_datetime(task_data.get("request_date")).date()
+                    if task_data.get("request_date")
+                    else None,
+                    key=f"fz_spc_req_{shipment_id}",
+                )
+
+                spc_val_raw = c2.text_input(
+                    "2. SPC Bill Value (SDG)",
+                    value=format_amount(
+                        task_data.get("spc_bill_value", 350000.0)
+                    ),
+                    key=f"fz_spc_val_{shipment_id}",
+                )
+                spc_val = parse_amount(spc_val_raw)
+
+                c3, c4 = st.columns(2)
+                set_d = c3.date_input(
+                    "3. SPC Bill Settlement Date",
+                    value=pd.to_datetime(
+                        task_data.get("settlement_date")
+                    ).date()
+                    if task_data.get("settlement_date")
+                    else None,
+                    key=f"fz_spc_set_{shipment_id}",
+                )
+                pol_d = c4.date_input(
+                    "4. Police Security Appointed Date",
+                    value=pd.to_datetime(
+                        task_data.get("police_appointed_date")
+                    ).date()
+                    if task_data.get("police_appointed_date")
+                    else None,
+                    key=f"fz_pol_{shipment_id}",
+                )
+                updated_data = {
+                    "request_date": req_d.isoformat() if req_d else None,
+                    "spc_bill_value": spc_val,
+                    "settlement_date": set_d.isoformat() if set_d else None,
+                    "police_appointed_date": pol_d.isoformat()
+                    if pol_d
+                    else None,
+                }
+
+            elif key == "fz_receive_cargo":
+                c1, c2 = st.columns(2)
+                rec_d = c1.date_input(
+                    "1. Containers Received Date",
+                    value=pd.to_datetime(
+                        task_data.get("containers_received_date")
+                    ).date()
+                    if task_data.get("containers_received_date")
+                    else None,
+                    key=f"fz_rec_{shipment_id}",
+                )
+                ret_d = c2.date_input(
+                    "2. Containers Returned Date",
+                    value=pd.to_datetime(
+                        task_data.get("containers_returned_date")
+                    ).date()
+                    if task_data.get("containers_returned_date")
+                    else None,
+                    key=f"fz_ret_{shipment_id}",
+                )
+                updated_data = {
+                    "containers_received_date": rec_d.isoformat()
+                    if rec_d
+                    else None,
+                    "containers_returned_date": ret_d.isoformat()
+                    if ret_d
+                    else None,
+                }
+
+            st.markdown("---")
+            c_save, c_mark = st.columns([2, 1])
+            save_clicked = c_save.button(
+                "💾 Save Step Inputs", key=f"btn_save_{key}_{shipment_id}"
+            )
+            complete_clicked = c_mark.button(
+                "✅ Mark Task as Complete",
+                key=f"btn_comp_{key}_{shipment_id}",
+            )
+
+            if save_clicked or complete_clicked:
+                new_status = "Completed" if complete_clicked else status
+                now_str = (
+                    date.today().isoformat()
+                    if complete_clicked
+                    else task.get("completed_at")
+                )
+
+                conn.execute(
+                    """
+                    UPDATE process_tasks 
+                    SET data_json = ?, status = ?, completed_at = ?
+                    WHERE task_id = ?
+                """,
+                    (
+                        json.dumps(updated_data),
+                        new_status,
+                        now_str,
+                        task["task_id"],
+                    ),
+                )
+
+                if key == "gen_info":
                     conn.execute(
                         """
-                        UPDATE process_tasks 
-                        SET data_json = ?, status = ?, completed_at = ?
-                        WHERE task_id = ?
+                        UPDATE shipments 
+                        SET est_arrival_date = ?, act_arrival_date = ?, est_clearance_date = ?, 
+                            manual_override_est_date = ?, notes = ?
+                        WHERE shipment_id = ?
                     """,
                         (
-                            json.dumps(updated_data),
-                            new_status,
-                            now_str,
-                            task["task_id"],
+                            est_arr.isoformat() if est_arr else None,
+                            act_arr.isoformat() if act_arr else None,
+                            est_clear_date.isoformat()
+                            if est_clear_date
+                            else None,
+                            1 if manual_override else 0,
+                            notes,
+                            shipment_id,
                         ),
                     )
-
-                    if key == "gen_info":
-                        conn.execute(
-                            """
-                            UPDATE shipments 
-                            SET est_arrival_date = ?, act_arrival_date = ?, est_clearance_date = ?, 
-                                manual_override_est_date = ?, notes = ?
-                            WHERE shipment_id = ?
-                        """,
-                            (
-                                est_arr.isoformat() if est_arr else None,
-                                act_arr.isoformat() if act_arr else None,
-                                est_clear_date.isoformat()
-                                if est_clear_date
-                                else None,
-                                1 if manual_override else 0,
-                                notes,
-                                shipment_id,
-                            ),
-                        )
-                    elif key == "clear_at_select":
-                        conn.execute(
-                            "UPDATE shipments SET clear_at = ? WHERE"
-                            " shipment_id = ?",
-                            (updated_data["clear_at"], shipment_id),
-                        )
-                    elif key == "final_clearance_complete" and mark_complete:
-                        conn.execute(
-                            "UPDATE shipments SET act_clearance_date = ?"
-                            " WHERE shipment_id = ?",
-                            (updated_data["act_clearance_date"], shipment_id),
-                        )
-
-                    conn.commit()
-                    st.success(
-                        f"Updated '{task['process_name']}' successfully!"
+                elif key == "clear_at_select":
+                    conn.execute(
+                        "UPDATE shipments SET clear_at = ? WHERE shipment_id ="
+                        " ?",
+                        (updated_data["clear_at"], shipment_id),
                     )
-                    st.rerun()
+                elif key == "final_clearance_complete" and complete_clicked:
+                    conn.execute(
+                        "UPDATE shipments SET act_clearance_date = ? WHERE"
+                        " shipment_id = ?",
+                        (updated_data["act_clearance_date"], shipment_id),
+                    )
+
+                conn.commit()
+                st.success(f"Updated '{task['process_name']}' successfully!")
+                st.rerun()
 
     conn.close()
 
@@ -1175,7 +1257,7 @@ elif choice == "⚙️ Target SLA Settings":
     st.title("⚙️ Configure Process SLA Targets")
     st.write(
         "Adjust target SLA durations (in days) for standard processes."
-        " Calculations across active workflows will update dynamically."
+        " Calculations across active workflows update dynamically."
     )
 
     conn = get_db_connection()
