@@ -45,13 +45,12 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 1. Master Orders Header Table (Fully Upgraded with all 20 Master Order Headers)
+    # 1. Master Orders Header Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS master_orders (
             po_number TEXT PRIMARY KEY,
             bu_id TEXT,
             division TEXT,
-            status TEXT DEFAULT 'Open',
             supplier_name TEXT,
             brand_manufacturer TEXT,
             approval_type TEXT,
@@ -66,19 +65,20 @@ def init_db():
             latest_shipment_date DATE,
             incoterm TEXT,
             country_of_origin TEXT,
-            offshore_1_name TEXT,
-            offshore_2_name TEXT,
+            offshore_companies_json TEXT,
+            offshore_po_no TEXT,
+            offshore_po_date DATE,
+            bu_est_shipping_cost REAL,
+            mode_of_shipment TEXT,
             currency TEXT DEFAULT 'USD',
             total_po_value REAL,
-            form_i_number TEXT,
-            bank_name TEXT,
             port_of_loading TEXT,
             order_date DATE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # --- DB MIGRATION: Ensure existing tables receive new columns dynamically ---
+    # --- DB MIGRATIONS FOR MASTER ORDERS ---
     cursor.execute("PRAGMA table_info(master_orders)")
     existing_cols = [row[1] for row in cursor.fetchall()]
     new_cols = {
@@ -93,8 +93,11 @@ def init_db():
         "bu_po_date": "DATE",
         "order_execution_date": "DATE",
         "latest_shipment_date": "DATE",
-        "offshore_1_name": "TEXT",
-        "offshore_2_name": "TEXT",
+        "offshore_companies_json": "TEXT",
+        "offshore_po_no": "TEXT",
+        "offshore_po_date": "DATE",
+        "bu_est_shipping_cost": "REAL",
+        "mode_of_shipment": "TEXT",
     }
     for col_name, col_type in new_cols.items():
         if col_name not in existing_cols:
@@ -102,29 +105,35 @@ def init_db():
                 f"ALTER TABLE master_orders ADD COLUMN {col_name} {col_type}"
             )
 
-    # 2. PO Line Items Table
+    # 2. PO Line Items Table (Enhanced with Category, Model/Product, Type, etc.)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS po_line_items (
             item_id INTEGER PRIMARY KEY AUTOINCREMENT,
             po_number TEXT,
+            category TEXT,
+            model_product TEXT,
+            type TEXT,
+            ordered_qty REAL,
+            unit_price REAL,
+            total_value REAL,
+            currency TEXT DEFAULT 'USD',
             item_code TEXT,
             item_description TEXT,
             hs_code TEXT,
-            quantity REAL,
-            unit_price REAL,
-            total_price REAL,
             ssmo_required INTEGER DEFAULT 0,
             FOREIGN KEY(po_number) REFERENCES master_orders(po_number)
         )
     """)
 
-    # 3. Shipments Table
+    # 3. Shipments Table (Enhanced with Supplier Invoice Details)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shipments (
             shipment_id INTEGER PRIMARY KEY AUTOINCREMENT,
             bl_awb TEXT UNIQUE,
             po_number TEXT,
             bu_id TEXT,
+            supplier_invoice_no TEXT,
+            supplier_invoice_date DATE,
             clear_at TEXT DEFAULT 'Pending',
             est_arrival_date DATE,
             act_arrival_date DATE,
@@ -137,7 +146,24 @@ def init_db():
         )
     """)
 
-    # 4. Process Tasks Engine Table
+    # 4. Shipment Line Items Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shipment_line_items (
+            shipment_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shipment_id INTEGER,
+            po_item_id INTEGER,
+            category TEXT,
+            model_product TEXT,
+            type TEXT,
+            qty_shipped REAL,
+            unit_price REAL,
+            total_shipped_value REAL,
+            FOREIGN KEY(shipment_id) REFERENCES shipments(shipment_id),
+            FOREIGN KEY(po_item_id) REFERENCES po_line_items(item_id)
+        )
+    """)
+
+    # 5. Process Tasks Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS process_tasks (
             task_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,25 +179,24 @@ def init_db():
         )
     """)
 
-    # Seed Sample Data if Database is Empty
+    # Seed Sample Data if Empty
     cursor.execute(
         "SELECT COUNT(*) FROM master_orders WHERE po_number = 'PO-2026-8812'"
     )
     if cursor.fetchone()[0] == 0:
         today = date.today()
 
-        # Seed Master Order
         cursor.execute(
             """
             INSERT OR IGNORE INTO master_orders 
-            (po_number, bu_id, division, status, supplier_name, brand_manufacturer, approval_type, consignee, 
+            (po_number, bu_id, division, supplier_name, brand_manufacturer, approval_type, consignee, 
              supplier_pi_no, supplier_pi_date, payment_terms, rec_signed_pi_date, sent_signed_pi_date, bu_po_date, 
-             order_execution_date, latest_shipment_date, incoterm, country_of_origin, offshore_1_name, offshore_2_name,
-             currency, total_po_value, form_i_number, bank_name, port_of_loading, order_date)
+             order_execution_date, latest_shipment_date, incoterm, country_of_origin, offshore_companies_json,
+             offshore_po_no, offshore_po_date, bu_est_shipping_cost, mode_of_shipment, currency, total_po_value, port_of_loading, order_date)
             VALUES 
-            ('PO-2026-8812', 'BU-LOGISTICS', 'Heavy Equipment Div', 'In Execution', 'Global Industrial Supplies', 'CAT / Siemens', 'Standard', 'Sudan Operations LLC',
-             'PI-88102', ?, 'L/C 90 Days', ?, ?, ?, ?, ?, 'CIF', 'Germany', 'Offshore Logistics Trading FZE', 'Global Maritime Ltd',
-             'USD', 250000.0, 'FI-99201', 'Bank of Khartoum', 'Hamburg Port', ?)
+            ('PO-2026-8812', 'BU-LOGISTICS', 'Heavy Equipment Div', 'Global Industrial Supplies', 'CAT / Siemens', 'Standard', 'Sudan Operations LLC',
+             'PI-88102', ?, 'L/C 90 Days', ?, ?, ?, ?, ?, 'CIF', 'Germany', ?,
+             'OFF-PO-9912', ?, 12500.0, 'Sea', 'USD', 250000.0, 'Hamburg Port', ?)
         """,
             (
                 (today - timedelta(days=20)).isoformat(),
@@ -180,26 +205,33 @@ def init_db():
                 (today - timedelta(days=16)).isoformat(),
                 (today - timedelta(days=15)).isoformat(),
                 (today + timedelta(days=30)).isoformat(),
+                json.dumps([
+                    "Offshore Logistics Trading FZE",
+                    "Global Maritime Ltd",
+                ]),
+                (today - timedelta(days=18)).isoformat(),
                 (today - timedelta(days=15)).isoformat(),
             ),
         )
 
-        # Seed PO Line Items
         cursor.execute("""
-            INSERT OR IGNORE INTO po_line_items (po_number, item_code, item_description, hs_code, quantity, unit_price, total_price, ssmo_required)
+            INSERT OR IGNORE INTO po_line_items 
+            (po_number, category, model_product, type, ordered_qty, unit_price, total_value, currency, item_code, item_description, hs_code, ssmo_required)
             VALUES 
-            ('PO-2026-8812', 'GEN-500KW', '500KW Heavy Duty Industrial Generator', '8502.13.00', 2, 100000.0, 200000.0, 1),
-            ('PO-2026-8812', 'SPA-FILTER', 'Replacement Air Filter Assembly Set', '8421.23.00', 50, 1000.0, 50000.0, 0)
+            ('PO-2026-8812', 'Machinery', 'CAT 500KW Generator', 'Heavy Duty', 2, 100000.0, 200000.0, 'USD', 'GEN-500KW', '500KW Heavy Duty Industrial Generator', '8502.13.00', 1),
+            ('PO-2026-8812', 'Spare Parts', 'Air Filter Set', 'OEM Replacement', 50, 1000.0, 50000.0, 'USD', 'SPA-FILTER', 'Replacement Air Filter Assembly Set', '8421.23.00', 0)
         """)
 
-        # Seed Shipment
         cursor.execute(
             """
-            INSERT OR IGNORE INTO shipments (bl_awb, po_number, bu_id, est_arrival_date, clear_at, notes)
+            INSERT OR IGNORE INTO shipments (bl_awb, po_number, bu_id, supplier_invoice_no, supplier_invoice_date, est_arrival_date, clear_at, notes)
             VALUES 
-            ('BL-2026-PORT-101', 'PO-2026-8812', 'BU-LOGISTICS', ?, 'Port', 'Priority heavy equipment shipment')
+            ('BL-2026-PORT-101', 'PO-2026-8812', 'BU-LOGISTICS', 'INV-2026-001', ?, ?, 'Port', 'Priority heavy equipment shipment')
         """,
-            ((today + timedelta(days=2)).isoformat(),),
+            (
+                (today - timedelta(days=5)).isoformat(),
+                (today + timedelta(days=2)).isoformat(),
+            ),
         )
 
         cursor.execute(
@@ -461,7 +493,7 @@ choice = st.sidebar.selectbox("Select Module", menu)
 
 
 # ==============================================================================
-# MODULE 1: MASTER ORDERS & LINE ITEMS (ALL 20 MASTER ORDER FIELDS INTEGRATED)
+# MODULE 1: MASTER ORDERS & LINE ITEMS
 # ==============================================================================
 if choice == "📦 Master Orders & Line Items":
     st.title("📦 Master Purchase Order & Line Item Management")
@@ -476,7 +508,7 @@ if choice == "📦 Master Orders & Line Items":
 
         # --- SECTION 1: HEADER IDENTIFICATION & ENTITIES ---
         st.markdown("##### 🏢 Order Identity & Business Entities")
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         po_number = c1.text_input(
             "PO Number *", placeholder="e.g. PO-2026-9901"
         )
@@ -493,65 +525,97 @@ if choice == "📦 Master Orders & Line Items":
                 "Spare Parts Div",
             ],
         )
-        status = c4.selectbox(
-            "Status (Today's Order Status)",
-            ["Open", "Draft", "Approved", "PI Received", "In Execution", "Completed"],
-        )
 
-        c5, c6, c7, c8 = st.columns(4)
-        supplier_name = c5.text_input(
+        c4, c5, c6, c7 = st.columns(4)
+        supplier_name = c4.text_input(
             "Supplier Name *", placeholder="e.g. Global Industrial Supplies"
         )
-        brand_manufacturer = c6.text_input(
+        brand_manufacturer = c5.text_input(
             "Brand / Manufacturer", placeholder="e.g. Caterpillar / Siemens"
         )
-        approval_type = c7.selectbox(
+        approval_type = c6.selectbox(
             "Approval Type", ["Standard", "Fast-Track", "Board Approved", "Emergency"]
         )
-        consignee = c8.text_input(
+        consignee = c7.text_input(
             "Consignee Entity", placeholder="e.g. Sudan Operations LLC"
         )
 
         st.markdown("---")
-        # --- SECTION 2: PROFORMA INVOICE (PI) & COMMERCIAL TERMS ---
-        st.markdown("##### 📄 Supplier PI & Commercial Terms")
-        c9, c10, c11, c12 = st.columns(4)
-        supplier_pi_no = c9.text_input(
+        # --- DYNAMIC OFFSHORE COMPANIES INPUT SECTION ---
+        st.markdown("##### 🏢 Offshore Companies (Dynamic Multiple Entities)")
+        st.caption(
+            "Provide Offshore Company 1, and optionally add 2 or more additional"
+            " companies."
+        )
+
+        if "offshore_companies_list" not in st.session_state:
+            st.session_state["offshore_companies_list"] = [""]
+
+        offshore_inputs = []
+        offshore_cols = st.columns(
+            max(1, len(st.session_state["offshore_companies_list"]))
+        )
+        for idx in range(len(st.session_state["offshore_companies_list"])):
+            with offshore_cols[idx]:
+                label = f"Offshore Company {idx+1}" + (
+                    " (Primary)" if idx == 0 else " (Optional)"
+                )
+                val = st.text_input(
+                    label,
+                    value=st.session_state["offshore_companies_list"][idx],
+                    key=f"offshore_input_{idx}",
+                )
+                offshore_inputs.append(val)
+
+        col_add_co, col_rem_co = st.columns([1, 4])
+        if col_add_co.button("➕ Add Another Offshore Company"):
+            st.session_state["offshore_companies_list"].append("")
+            st.rerun()
+
+        st.markdown("---")
+        # --- SECTION 2: PROFORMA INVOICE (PI), OFFSHORE PO & SHIPPING TERMS ---
+        st.markdown("##### 📄 Supplier PI, Offshore PO & Shipping Terms")
+        c8, c9, c10, c11 = st.columns(4)
+        supplier_pi_no = c8.text_input(
             "Supplier PI No", placeholder="e.g. PI-99201"
         )
-        supplier_pi_date = c10.date_input(
+        supplier_pi_date = c9.date_input(
             "Supplier PI Date", value=date.today()
         )
-        payment_terms = c11.selectbox(
+        payment_terms = c10.selectbox(
             "Supplier Payment Terms",
             ["L/C 90 Days", "L/C at Sight", "30% Advance / 70% LC", "CAD", "Open Account"],
         )
-        incoterm = c12.selectbox(
+        incoterm = c11.selectbox(
             "Incoterm", ["CIF", "FOB", "CFR", "EXW", "DDP", "FCA"]
         )
 
-        c13, c14, c15, c16 = st.columns(4)
-        country_of_origin = c13.selectbox(
+        c12, c13, c14, c15 = st.columns(4)
+        country_of_origin = c12.selectbox(
             "Origin (Country)",
             ["Germany", "China", "United States", "Turkey", "India", "UAE", "Saudi Arabia"],
         )
-        offshore_1 = c14.selectbox(
-            "Off Shore 1 Name",
-            ["Offshore Logistics Trading FZE", "Global Trading Dubai", "Europe Sourcing GmbH", "None"],
+        offshore_po_no = c13.text_input(
+            "Offshore PO No.", placeholder="e.g. OFF-PO-9910"
         )
-        offshore_2 = c15.text_input(
-            "Off Shore 2 Name (Optional)", placeholder="Secondary Offshore entity..."
+        offshore_po_date = c14.date_input(
+            "Offshore PO Date", value=date.today()
         )
-        currency = c16.selectbox("Currency", ["USD", "EUR", "SDG", "AED"])
+        mode_of_shipment = c15.selectbox(
+            "Mode of Shipment", ["Sea", "Air", "Courier"]
+        )
 
-        c17, c18, c19, c20 = st.columns(4)
-        po_val_raw = c17.text_input(
-            "Total PO Value", value="100,000.00", help="Auto-formatted numeric input"
+        c16, c17, c18 = st.columns(3)
+        bu_est_shipping_raw = c16.text_input(
+            "BU Estimated Shipping Cost", value="10,000.00"
         )
-        total_po_value = parse_amount(po_val_raw)
-        form_i = c18.text_input("Form I / L/C Reference", placeholder="FI-99021")
-        bank_name = c19.text_input("Bank Name", placeholder="Bank of Khartoum")
-        port_of_loading = c20.text_input("Port of Loading", placeholder="Hamburg Port")
+        bu_est_shipping_cost = parse_amount(bu_est_shipping_raw)
+        port_of_loading = c17.text_input(
+            "Port of Loading", placeholder="e.g. Hamburg Port"
+        )
+        currency_master = c18.selectbox(
+            "Master Currency", ["USD", "EUR", "SDG", "AED"]
+        )
 
         st.markdown("---")
         # --- SECTION 3: KEY MILESTONE DATES ---
@@ -566,50 +630,70 @@ if choice == "📦 Master Orders & Line Items":
         st.markdown("---")
         st.subheader("🛒 PO Line Items Entry")
         st.caption(
-            "Add itemized line breakdown (HS Codes, Quantities, Unit Prices,"
-            " SSMO flags)"
+            "Itemized Breakdown: Category, Model/Product, Type, Ordered Qty,"
+            " Unit Price & Auto-Calculated Value"
         )
 
         if "temp_line_items" not in st.session_state:
             st.session_state["temp_line_items"] = []
 
-        with st.expander("➕ Add Line Item to PO", expanded=True):
-            li_col1, li_col2, li_col3 = st.columns(3)
-            item_code = li_col1.text_input(
-                "Item Code / Part No.", placeholder="GEN-500"
+        with st.expander("➕ Add Line Item to Master Order", expanded=True):
+            li_c1, li_c2, li_c3 = st.columns(3)
+            category = li_c1.selectbox(
+                "Category *",
+                ["Machinery", "Spare Parts", "Electronics", "Raw Materials", "Vehicles", "Chemicals"],
             )
-            item_desc = li_col2.text_input(
-                "Item Description *", placeholder="500KW Generator Set"
+            model_product = li_c2.text_input(
+                "Model / Product *", placeholder="e.g. CAT 500KW Generator"
             )
-            hs_code = li_col3.text_input(
-                "HS Code (Tariff)", placeholder="8502.13.00"
+            item_type = li_c3.selectbox(
+                "Type *",
+                ["Heavy Duty", "Standard", "OEM Replacement", "Industrial", "Consumable"],
             )
 
-            li_col4, li_col5, li_col6 = st.columns(3)
-            qty = li_col4.number_input("Quantity", min_value=1.0, value=1.0)
-            u_price_raw = li_col5.text_input("Unit Price", value="1,000.00")
+            li_c4, li_c5, li_c6, li_c7 = st.columns(4)
+            ordered_qty = li_c4.number_input(
+                "Ordered Qty *", min_value=1.0, value=1.0
+            )
+            u_price_raw = li_c5.text_input("Unit Price *", value="1,000.00")
             unit_price = parse_amount(u_price_raw)
-            ssmo_req = li_col6.checkbox(
-                "SSMO / Inspection Required?", value=True
+            item_currency = li_c6.selectbox(
+                "Currency", ["USD", "EUR", "SDG", "AED"], index=0
+            )
+            ssmo_req = li_c7.checkbox("SSMO Inspection Req.?", value=True)
+
+            li_c8, li_c9 = st.columns(2)
+            hs_code = li_c8.text_input("HS Code", placeholder="8502.13.00")
+            item_code = li_c9.text_input(
+                "Item Code / Part No.", placeholder="GEN-500KW"
             )
 
-            line_total = qty * unit_price
-            st.info(f"Calculated Line Total: **{format_amount(line_total)}**")
+            total_value = ordered_qty * unit_price
+            st.info(
+                f"Calculated Item Total Value: **{item_currency}"
+                f" {format_amount(total_value)}**"
+            )
 
-            if st.button("➕ Add Item to List"):
-                if not item_desc.strip():
-                    st.error("Item Description is required.")
+            if st.button("➕ Add Item to Order"):
+                if not model_product.strip():
+                    st.error("Model / Product Name is required.")
                 else:
                     st.session_state["temp_line_items"].append({
-                        "item_code": item_code.strip(),
-                        "item_description": item_desc.strip(),
-                        "hs_code": hs_code.strip(),
-                        "quantity": qty,
+                        "category": category,
+                        "model_product": model_product.strip(),
+                        "type": item_type,
+                        "ordered_qty": ordered_qty,
                         "unit_price": unit_price,
-                        "total_price": line_total,
+                        "total_value": total_value,
+                        "currency": item_currency,
+                        "item_code": item_code.strip(),
+                        "item_description": f"{model_product.strip()} ({item_type})",
+                        "hs_code": hs_code.strip(),
                         "ssmo_required": 1 if ssmo_req else 0,
                     })
-                    st.success(f"Added '{item_desc}' to draft PO line items!")
+                    st.success(
+                        f"Added '{model_product}' to draft PO line items!"
+                    )
                     st.rerun()
 
         if st.session_state["temp_line_items"]:
@@ -618,18 +702,20 @@ if choice == "📦 Master Orders & Line Items":
             df_temp["formatted_unit_price"] = df_temp["unit_price"].apply(
                 format_amount
             )
-            df_temp["formatted_total"] = df_temp["total_price"].apply(
+            df_temp["formatted_total"] = df_temp["total_value"].apply(
                 format_amount
             )
 
             st.dataframe(
                 df_temp[[
-                    "item_code",
-                    "item_description",
-                    "hs_code",
-                    "quantity",
+                    "category",
+                    "model_product",
+                    "type",
+                    "ordered_qty",
                     "formatted_unit_price",
                     "formatted_total",
+                    "currency",
+                    "hs_code",
                     "ssmo_required",
                 ]],
                 use_container_width=True,
@@ -637,20 +723,21 @@ if choice == "📦 Master Orders & Line Items":
             )
 
             line_item_sum = sum(
-                item["total_price"]
+                item["total_value"]
                 for item in st.session_state["temp_line_items"]
             )
             st.write(
-                f"**Total Line Items Sum:** `{currency} {format_amount(line_item_sum)}`"
+                "**Total Calculated Order Value:**"
+                f" `{currency_master} {format_amount(line_item_sum)}`"
             )
 
-            if st.button("🗑️ Clear Draft Line Items"):
+            if st.button("🗑️ Clear Draft Items"):
                 st.session_state["temp_line_items"] = []
                 st.rerun()
 
         st.markdown("---")
         if st.button(
-            "💾 Save Master Order with Full Metadata",
+            "💾 Save Master Order with All Metadata",
             use_container_width=True,
             type="primary",
         ):
@@ -660,20 +747,29 @@ if choice == "📦 Master Orders & Line Items":
                 conn = get_db_connection()
                 try:
                     cursor = conn.cursor()
+                    cleaned_offshore_list = [
+                        name.strip() for name in offshore_inputs if name.strip()
+                    ]
+                    offshore_json_str = json.dumps(cleaned_offshore_list)
+
+                    calculated_total_po_val = sum(
+                        item["total_value"]
+                        for item in st.session_state["temp_line_items"]
+                    )
+
                     cursor.execute(
                         """
                         INSERT INTO master_orders 
-                        (po_number, bu_id, division, status, supplier_name, brand_manufacturer, approval_type, consignee,
+                        (po_number, bu_id, division, supplier_name, brand_manufacturer, approval_type, consignee,
                          supplier_pi_no, supplier_pi_date, payment_terms, rec_signed_pi_date, sent_signed_pi_date, bu_po_date,
-                         order_execution_date, latest_shipment_date, incoterm, country_of_origin, offshore_1_name, offshore_2_name,
-                         currency, total_po_value, form_i_number, bank_name, port_of_loading, order_date)
+                         order_execution_date, latest_shipment_date, incoterm, country_of_origin, offshore_companies_json,
+                         offshore_po_no, offshore_po_date, bu_est_shipping_cost, mode_of_shipment, currency, total_po_value, port_of_loading, order_date)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             po_number.strip(),
                             bu_id,
                             division,
-                            status,
                             supplier_name.strip(),
                             brand_manufacturer.strip(),
                             approval_type,
@@ -688,12 +784,13 @@ if choice == "📦 Master Orders & Line Items":
                             latest_shipment_date.isoformat(),
                             incoterm,
                             country_of_origin,
-                            offshore_1,
-                            offshore_2.strip(),
-                            currency,
-                            total_po_value,
-                            form_i.strip(),
-                            bank_name.strip(),
+                            offshore_json_str,
+                            offshore_po_no.strip(),
+                            offshore_po_date.isoformat(),
+                            bu_est_shipping_cost,
+                            mode_of_shipment,
+                            currency_master,
+                            calculated_total_po_val,
                             port_of_loading.strip(),
                             bu_po_date.isoformat(),
                         ),
@@ -702,17 +799,22 @@ if choice == "📦 Master Orders & Line Items":
                     for item in st.session_state["temp_line_items"]:
                         cursor.execute(
                             """
-                            INSERT INTO po_line_items (po_number, item_code, item_description, hs_code, quantity, unit_price, total_price, ssmo_required)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO po_line_items 
+                            (po_number, category, model_product, type, ordered_qty, unit_price, total_value, currency, item_code, item_description, hs_code, ssmo_required)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                             (
                                 po_number.strip(),
+                                item["category"],
+                                item["model_product"],
+                                item["type"],
+                                item["ordered_qty"],
+                                item["unit_price"],
+                                item["total_value"],
+                                item["currency"],
                                 item["item_code"],
                                 item["item_description"],
                                 item["hs_code"],
-                                item["quantity"],
-                                item["unit_price"],
-                                item["total_price"],
                                 item["ssmo_required"],
                             ),
                         )
@@ -724,6 +826,7 @@ if choice == "📦 Master Orders & Line Items":
                         " saved successfully!"
                     )
                     st.session_state["temp_line_items"] = []
+                    st.session_state["offshore_companies_list"] = [""]
                     st.rerun()
                 except sqlite3.IntegrityError:
                     st.error(f"PO Number '{po_number}' already exists.")
@@ -732,10 +835,10 @@ if choice == "📦 Master Orders & Line Items":
 
     # --- TAB 2: MASTER ORDER REGISTRY ---
     with tab2:
-        st.subheader("📋 Registered Master Orders Directory")
+        st.subheader("📋 Registered Master Orders Registry")
         conn = get_db_connection()
         mo_df = pd.read_sql_query(
-            "SELECT po_number, bu_id, division, status, supplier_name, brand_manufacturer, consignee, supplier_pi_no, incoterm, country_of_origin, currency, total_po_value, latest_shipment_date FROM master_orders ORDER BY created_at DESC",
+            "SELECT po_number, bu_id, division, supplier_name, brand_manufacturer, consignee, supplier_pi_no, mode_of_shipment, incoterm, country_of_origin, currency, total_po_value, latest_shipment_date FROM master_orders ORDER BY created_at DESC",
             conn,
         )
 
@@ -751,20 +854,19 @@ if choice == "📦 Master Orders & Line Items":
                 "Select Master Order to Inspect:", mo_df["po_number"].tolist()
             )
 
-            # Display full Master Order Header Details in expandable view
             po_full_details = dict(
                 conn.execute(
                     "SELECT * FROM master_orders WHERE po_number = ?",
                     (selected_inspect_po,),
                 ).fetchone()
             )
-            
-            with st.expander("📌 Full Master Order Header Metadata", expanded=True):
+
+            with st.expander("📌 Full Master Order Metadata", expanded=True):
                 m_c1, m_c2, m_c3, m_c4 = st.columns(4)
                 m_c1.write(f"**PO Number:** {po_full_details.get('po_number')}")
                 m_c1.write(f"**BU:** {po_full_details.get('bu_id')}")
                 m_c1.write(f"**Division:** {po_full_details.get('division')}")
-                m_c1.write(f"**Status:** {po_full_details.get('status')}")
+                m_c1.write(f"**Mode:** {po_full_details.get('mode_of_shipment')}")
 
                 m_c2.write(f"**Supplier:** {po_full_details.get('supplier_name')}")
                 m_c2.write(f"**Brand/Manuf.:** {po_full_details.get('brand_manufacturer')}")
@@ -773,21 +875,20 @@ if choice == "📦 Master Orders & Line Items":
 
                 m_c3.write(f"**Supplier PI No:** {po_full_details.get('supplier_pi_no')}")
                 m_c3.write(f"**Supplier PI Date:** {po_full_details.get('supplier_pi_date')}")
-                m_c3.write(f"**Payment Terms:** {po_full_details.get('payment_terms')}")
-                m_c3.write(f"**Incoterm:** {po_full_details.get('incoterm')}")
+                m_c3.write(f"**Offshore PO No:** {po_full_details.get('offshore_po_no')}")
+                m_c3.write(f"**Offshore PO Date:** {po_full_details.get('offshore_po_date')}")
 
-                m_c4.write(f"**Origin:** {po_full_details.get('country_of_origin')}")
-                m_c4.write(f"**Off Shore 1:** {po_full_details.get('offshore_1_name')}")
-                m_c4.write(f"**Off Shore 2:** {po_full_details.get('offshore_2_name')}")
-                m_c4.write(f"**Latest Shipment Date:** {po_full_details.get('latest_shipment_date')}")
+                offshore_json_val = po_full_details.get("offshore_companies_json", "[]")
+                offshore_co_list = json.loads(offshore_json_val) if offshore_json_val else []
+                m_c4.write(f"**Offshore Companies:** {', '.join(offshore_co_list) if offshore_co_list else 'None'}")
+                m_c4.write(f"**BU Shipping Budget:** {format_amount(po_full_details.get('bu_est_shipping_cost'))}")
+                m_c4.write(f"**Incoterm / Origin:** {po_full_details.get('incoterm')} / {po_full_details.get('country_of_origin')}")
 
             col_li, col_sh = st.columns(2)
             with col_li:
                 st.markdown("**Itemized Line Breakdown:**")
                 items_df = pd.read_sql_query(
-                    "SELECT item_code, item_description, hs_code, quantity,"
-                    " unit_price, total_price, ssmo_required FROM po_line_items"
-                    " WHERE po_number = ?",
+                    "SELECT category, model_product, type, ordered_qty, unit_price, total_value, currency, hs_code FROM po_line_items WHERE po_number = ?",
                     conn,
                     params=(selected_inspect_po,),
                 )
@@ -795,7 +896,7 @@ if choice == "📦 Master Orders & Line Items":
                     items_df["unit_price"] = items_df["unit_price"].apply(
                         format_amount
                     )
-                    items_df["total_price"] = items_df["total_price"].apply(
+                    items_df["total_value"] = items_df["total_value"].apply(
                         format_amount
                     )
                     st.dataframe(
@@ -805,10 +906,9 @@ if choice == "📦 Master Orders & Line Items":
                     st.info("No line items recorded for this PO.")
 
             with col_sh:
-                st.markdown("**Linked Shipments (BL / AWB):**")
+                st.markdown("**Linked Shipments:**")
                 shp_linked_df = pd.read_sql_query(
-                    "SELECT bl_awb, clear_at, est_arrival_date,"
-                    " est_clearance_date FROM shipments WHERE po_number = ?",
+                    "SELECT bl_awb, supplier_invoice_no, clear_at, est_arrival_date FROM shipments WHERE po_number = ?",
                     conn,
                     params=(selected_inspect_po,),
                 )
@@ -825,20 +925,19 @@ if choice == "📦 Master Orders & Line Items":
 
 
 # ==============================================================================
-# MODULE 2: ATTACH SHIPMENT (BL / AWB)
+# MODULE 2: ATTACH SHIPMENT & SHIPMENT LINE ITEMS
 # ==============================================================================
 elif choice == "🚢 Attach Shipment (BL/AWB)":
-    st.title("🚢 Attach Shipment to Master Purchase Order")
+    st.title("🚢 Attach Shipment & Invoice Details to Master Order")
 
     conn = get_db_connection()
     existing_pos = pd.read_sql_query(
-        "SELECT po_number, bu_id, supplier_name, currency, total_po_value FROM"
-        " master_orders WHERE status != 'Completed'",
+        "SELECT po_number, bu_id, supplier_name, currency, total_po_value FROM master_orders",
         conn,
     )
 
     if existing_pos.empty:
-        st.info("No open Master Orders available. Please create a PO first.")
+        st.info("No Master Orders available. Please create a PO first.")
     else:
         selected_po = st.selectbox(
             "Select Master Order (PO) *",
@@ -846,26 +945,138 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
             format_func=lambda x: f"{x} - {existing_pos[existing_pos['po_number'] == x]['supplier_name'].values[0]} ({existing_pos[existing_pos['po_number'] == x]['bu_id'].values[0]})",
         )
 
-        col1, col2 = st.columns(2)
+        st.markdown("##### 📦 Shipment Header & Supplier Invoice Details")
+        col1, col2, col3 = st.columns(3)
         bl_awb = col1.text_input(
             "BL / AWB Number *", placeholder="e.g. BL-2026-PORT-200"
         )
-        clear_at = col2.selectbox(
+        supplier_invoice_no = col2.text_input(
+            "Supplier Invoice No. *", placeholder="e.g. INV-2026-9901"
+        )
+        supplier_invoice_date = col3.date_input(
+            "Supplier Invoice Date", value=date.today()
+        )
+
+        col4, col5, col6 = st.columns(3)
+        clear_at = col4.selectbox(
             "Initial Clearance Route Track", ["Port", "Free Zone", "Pending"]
         )
-
-        col3, col4 = st.columns(2)
-        est_arrival = col3.date_input(
+        est_arrival = col5.date_input(
             "Estimated Arrival Date (ETA)", value=date.today()
         )
-        notes = col4.text_area(
-            "Shipment Cargo Description / Notes",
-            placeholder="Containers specs, priority handling instructions...",
+        notes = col6.text_area(
+            "Shipment Notes", placeholder="Cargo details, container numbers..."
         )
 
-        if st.button("🚀 Create Shipment & Seed Clearance Tasks"):
-            if not bl_awb.strip():
-                st.error("BL / AWB Number is required.")
+        st.markdown("---")
+        st.markdown("##### 🛒 Shipment Item Level Breakdown")
+        st.caption(
+            "Select Model/Product from Master Order to auto-complete Category"
+            " & Type. Enter QTY Shipped and Unit Price."
+        )
+
+        po_items_df = pd.read_sql_query(
+            "SELECT item_id, category, model_product, type, ordered_qty, unit_price FROM po_line_items WHERE po_number = ?",
+            conn,
+            params=(selected_po,),
+        )
+
+        if "shipment_items_temp" not in st.session_state:
+            st.session_state["shipment_items_temp"] = []
+
+        if not po_items_df.empty:
+            item_options = po_items_df["model_product"].tolist()
+            selected_model = st.selectbox(
+                "Select Model/Product from PO Line Items:", item_options
+            )
+
+            po_item_row = po_items_df[
+                po_items_df["model_product"] == selected_model
+            ].iloc[0]
+
+            sh_c1, sh_c2, sh_c3 = st.columns(3)
+            sh_c1.text_input(
+                "Category (Auto-completed)",
+                value=po_item_row["category"],
+                disabled=True,
+            )
+            sh_c2.text_input(
+                "Model / Product",
+                value=po_item_row["model_product"],
+                disabled=True,
+            )
+            sh_c3.text_input(
+                "Type (Auto-completed)",
+                value=po_item_row["type"],
+                disabled=True,
+            )
+
+            sh_c4, sh_c5, sh_c6 = st.columns(3)
+            qty_shipped = sh_c4.number_input(
+                "QTY Shipped *",
+                min_value=0.1,
+                value=float(po_item_row["ordered_qty"]),
+            )
+            u_price_sh_raw = sh_c5.text_input(
+                "UNIT PRICE (TP Screen) *",
+                value=format_amount(po_item_row["unit_price"]),
+            )
+            unit_price_sh = parse_amount(u_price_sh_raw)
+
+            total_shipped_val = qty_shipped * unit_price_sh
+            sh_c6.markdown(
+                f"**Total Shipped Value:**\n###"
+                f" {format_amount(total_shipped_val)}"
+            )
+
+            if st.button("➕ Add Item to Shipment"):
+                st.session_state["shipment_items_temp"].append({
+                    "po_item_id": int(po_item_row["item_id"]),
+                    "category": po_item_row["category"],
+                    "model_product": po_item_row["model_product"],
+                    "type": po_item_row["type"],
+                    "qty_shipped": qty_shipped,
+                    "unit_price": unit_price_sh,
+                    "total_shipped_value": total_shipped_val,
+                })
+                st.success(
+                    f"Added '{po_item_row['model_product']}' to shipment items!"
+                )
+                st.rerun()
+
+            if st.session_state["shipment_items_temp"]:
+                st.markdown("##### Shipment Items Summary:")
+                sh_summary_df = pd.DataFrame(
+                    st.session_state["shipment_items_temp"]
+                )
+                sh_summary_df["formatted_unit_price"] = sh_summary_df[
+                    "unit_price"
+                ].apply(format_amount)
+                sh_summary_df["formatted_total"] = sh_summary_df[
+                    "total_shipped_value"
+                ].apply(format_amount)
+                st.dataframe(
+                    sh_summary_df[[
+                        "category",
+                        "model_product",
+                        "type",
+                        "qty_shipped",
+                        "formatted_unit_price",
+                        "formatted_total",
+                    ]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        else:
+            st.warning("Selected Master Order has no line items defined.")
+
+        st.markdown("---")
+        if st.button(
+            "🚀 Create Shipment & Initialize Workflow Tasks", type="primary"
+        ):
+            if not bl_awb.strip() or not supplier_invoice_no.strip():
+                st.error("BL / AWB Number and Supplier Invoice No. are required.")
             else:
                 po_row = existing_pos[
                     existing_pos["po_number"] == selected_po
@@ -874,13 +1085,15 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
                     cursor = conn.cursor()
                     cursor.execute(
                         """
-                        INSERT INTO shipments (bl_awb, po_number, bu_id, clear_at, est_arrival_date, notes)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO shipments (bl_awb, po_number, bu_id, supplier_invoice_no, supplier_invoice_date, clear_at, est_arrival_date, notes)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             bl_awb.strip(),
                             selected_po,
                             po_row["bu_id"],
+                            supplier_invoice_no.strip(),
+                            supplier_invoice_date.isoformat(),
                             clear_at,
                             est_arrival.isoformat(),
                             notes,
@@ -888,12 +1101,31 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
                     )
                     shp_id = cursor.lastrowid
 
+                    for sh_item in st.session_state["shipment_items_temp"]:
+                        cursor.execute(
+                            """
+                            INSERT INTO shipment_line_items (shipment_id, po_item_id, category, model_product, type, qty_shipped, unit_price, total_shipped_value)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                            (
+                                shp_id,
+                                sh_item["po_item_id"],
+                                sh_item["category"],
+                                sh_item["model_product"],
+                                sh_item["type"],
+                                sh_item["qty_shipped"],
+                                sh_item["unit_price"],
+                                sh_item["total_shipped_value"],
+                            ),
+                        )
+
                     seed_tasks_for_shipment(cursor, shp_id)
                     conn.commit()
                     st.success(
-                        f"Shipment **{bl_awb}** linked to PO **{selected_po}**"
-                        " and initialized in Clearance Workflow Engine!"
+                        f"Shipment **{bl_awb}** successfully attached to"
+                        f" **{selected_po}**!"
                     )
+                    st.session_state["shipment_items_temp"] = []
                     st.rerun()
                 except sqlite3.IntegrityError:
                     st.error(f"Shipment with BL/AWB '{bl_awb}' already exists.")
@@ -901,9 +1133,7 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
     st.markdown("---")
     st.subheader("📌 Active Shipments Pipeline")
     shp_df = pd.read_sql_query(
-        "SELECT shipment_id, bl_awb, po_number, bu_id, clear_at,"
-        " est_arrival_date, est_clearance_date, created_at FROM shipments ORDER"
-        " BY created_at DESC",
+        "SELECT shipment_id, bl_awb, po_number, bu_id, supplier_invoice_no, supplier_invoice_date, clear_at, est_arrival_date FROM shipments ORDER BY created_at DESC",
         conn,
     )
     conn.close()
@@ -1033,17 +1263,9 @@ elif choice == "📋 Clearance Task Engine":
                     key=f"orig_rec_{shipment_id}",
                 )
 
-                lc_disabled = not bool(orig_rec)
-                lc_no = st.text_input(
-                    "3. L/C No. (Activates when Original Set Received)",
-                    value=task_data.get("lc_no", ""),
-                    disabled=lc_disabled,
-                    key=f"lc_no_{shipment_id}",
-                )
-
                 col3, col4 = st.columns(2)
                 est_arr = col3.date_input(
-                    "4. Shipment Estimated Arrival Date",
+                    "3. Shipment Estimated Arrival Date",
                     value=pd.to_datetime(
                         shipment_data.get("est_arrival_date")
                     ).date()
@@ -1052,7 +1274,7 @@ elif choice == "📋 Clearance Task Engine":
                     key=f"est_arr_{shipment_id}",
                 )
                 act_arr = col4.date_input(
-                    "5. Shipment Actual Arrival Date",
+                    "4. Shipment Actual Arrival Date",
                     value=pd.to_datetime(
                         shipment_data.get("act_arrival_date")
                     ).date()
@@ -1062,7 +1284,7 @@ elif choice == "📋 Clearance Task Engine":
                 )
 
                 st.markdown("---")
-                st.markdown("**6. Clearance Completion Estimate Date:**")
+                st.markdown("**5. Clearance Completion Estimate Date:**")
                 col_est1, col_est2 = st.columns(2)
 
                 override_key = f"manual_override_cb_{shipment_id}"
@@ -1098,7 +1320,7 @@ elif choice == "📋 Clearance Task Engine":
                     else calculated_completion_est
                 )
                 notes = st.text_area(
-                    "7. General Notes",
+                    "6. General Notes",
                     value=shipment_data.get("notes", ""),
                     key=f"notes_{shipment_id}",
                 )
@@ -1110,7 +1332,6 @@ elif choice == "📋 Clearance Task Engine":
                     "orig_shipment_rec_date": orig_rec.isoformat()
                     if orig_rec
                     else None,
-                    "lc_no": lc_no,
                 }
 
             # 2. Track Selection
