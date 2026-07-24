@@ -1,3 +1,5 @@
+conn = sqlite3.connect("your_db_name.db", timeout=30.0)
+conn.execute("PRAGMA journal_mode=WAL;")
 import json
 import sqlite3
 from datetime import date, datetime, timedelta
