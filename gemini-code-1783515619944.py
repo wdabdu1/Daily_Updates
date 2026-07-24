@@ -1,8 +1,16 @@
 import json
 import sqlite3
+import os
 from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
+
+# ... all your other imports ...
+
+# Initialize WAL mode once near top of script
+conn = sqlite3.connect("shipments.db", timeout=30.0)
+conn.execute("PRAGMA journal_mode=WAL;")
+
 
 # --- STREAMLIT PAGE CONFIGURATION ---
 st.set_page_config(
