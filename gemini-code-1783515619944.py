@@ -50,6 +50,7 @@ TENOR_LIST = [
     "120 Days",
     "180 Days",
 ]
+CURRENCY_LIST = ["USD", "EUR", "SDG", "AED"]
 
 
 # --- HELPERS: PARSING & FORMATTING ---
@@ -74,27 +75,11 @@ def format_amount(val) -> str:
     return f"{num:,.2f}"
 
 
-def parse_formatted_float(val_str: str) -> float:
-    """Safely strips commas/dollar signs and converts string to float."""
-    if not val_str:
-        return 0.0
-    cleaned = str(val_str).replace(",", "").replace("$", "").strip()
-    try:
-        return float(cleaned)
-    except ValueError:
-        return 0.0
-
-
-def live_comma_input(label: str, key: str, default_val: float = 0.0) -> float:
-    """
-    Renders a text_input that allows live comma formatting,
-    prevents fat-finger errors, and shows live formatted feedback.
-    """
-    initial_str = f"{default_val:,.2f}" if default_val else "0.00"
-    raw_input = st.text_input(label, value=initial_str, key=key)
-    parsed_val = parse_formatted_float(raw_input)
-    st.caption(f"💡 Formatted Value: **${parsed_val:,.2f}**")
-    return parsed_val
+def get_index_safe(lst: list, value: str, default: int = 0) -> int:
+    """Safely finds list index for selectboxes, falling back to default index."""
+    if value in lst:
+        return lst.index(value)
+    return default
 
 
 # --- DATABASE CONNECTION & INITIALIZATION ---
@@ -720,17 +705,15 @@ if choice == "📦 Master Orders & Line Items":
         )
 
         c16, c17, c18 = st.columns(3)
-        with c16:
-            bu_est_shipping_cost = live_comma_input(
-                "BU Estimated Shipping Cost",
-                key="bu_est_shipping_cost_live",
-                default_val=10000.00,
-            )
+        bu_est_shipping_raw = c16.text_input(
+            "BU Estimated Shipping Cost", value="10,000.00"
+        )
+        bu_est_shipping_cost = parse_amount(bu_est_shipping_raw)
         port_of_loading = c17.text_input(
             "Port of Loading", placeholder="e.g. Hamburg Port"
         )
         currency_master = c18.selectbox(
-            "Master Currency", ["USD", "EUR", "SDG", "AED"]
+            "Master Currency", CURRENCY_LIST
         )
 
         st.markdown("---")
@@ -798,7 +781,10 @@ if choice == "📦 Master Orders & Line Items":
                     )
                     conn.commit()
                     st.session_state["active_po_for_items"] = po_number.strip()
-                    st.success("Order created.")
+                    st.success(
+                        f"Master Order Header **{po_number.strip()}** saved"
+                        " successfully!"
+                    )
                     st.rerun()
                 except sqlite3.IntegrityError:
                     st.error(f"PO Number '{po_number.strip()}' already exists.")
@@ -876,7 +862,7 @@ if choice == "📦 Master Orders & Line Items":
                 u_price_raw = li_c5.text_input("Unit Price *", value="1,000.00")
                 unit_price = parse_amount(u_price_raw)
                 item_currency = li_c6.selectbox(
-                    "Currency", ["USD", "EUR", "SDG", "AED"], index=0
+                    "Currency", CURRENCY_LIST, index=0
                 )
                 ssmo_req = li_c7.checkbox("SSMO Inspection Req.?", value=True)
 
@@ -1173,7 +1159,6 @@ elif choice == "📂 Shipment Grouped Details & Actions":
             f" Entities: **{', '.join(offshore_list)}**"
         )
 
-        # helper function to render save button at end of each group
         def group_save_button(group_key, data_dict):
             if st.button(
                 f"💾 Save {group_key.replace('_', ' ').title()} Group Data",
@@ -1194,17 +1179,18 @@ elif choice == "📂 Shipment Grouped Details & Actions":
             fwd_name = c1.selectbox(
                 "Forwarder Name",
                 FORWARDER_LIST,
-                index=FORWARDER_LIST.index(g_data.get("fwd_name", FORWARDER_LIST[0]))
-                if g_data.get("fwd_name") in FORWARDER_LIST
-                else 0,
+                index=get_index_safe(FORWARDER_LIST, g_data.get("fwd_name")),
+                key=f"fwd_name_{shipment_id}",
             )
             act_ship_cost = c2.number_input(
                 "Actual Shipping Cost",
                 value=float(g_data.get("act_ship_cost", 0.0)),
+                key=f"act_ship_cost_{shipment_id}",
             )
             act_ship_cost_usd = c3.number_input(
                 "Actual Shipping Cost $",
                 value=float(g_data.get("act_ship_cost_usd", 0.0)),
+                key=f"act_ship_cost_usd_{shipment_id}",
             )
 
             c4, c5 = st.columns(2)
@@ -1216,6 +1202,7 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 "Marine Insurance",
                 ["Yes", "No"],
                 index=0 if g_data.get("marine_ins") == "Yes" else 1,
+                key=f"marine_ins_{shipment_id}",
             )
 
             group_save_button("forwarder", {
@@ -1237,18 +1224,24 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 value=pd.to_datetime(g_data.get("acd_date")).date()
                 if g_data.get("acd_date")
                 else date.today(),
+                key=f"acd_date_{shipment_id}",
             )
             acd_cost_usd = c2.number_input(
-                "ACD COST $", value=float(g_data.get("acd_cost_usd", 0.0))
+                "ACD COST $",
+                value=float(g_data.get("acd_cost_usd", 0.0)),
+                key=f"acd_cost_usd_{shipment_id}",
             )
             acd_settled_date = c3.date_input(
                 "ACD Cost Settled Date",
                 value=pd.to_datetime(g_data.get("acd_settled_date")).date()
                 if g_data.get("acd_settled_date")
                 else date.today(),
+                key=f"acd_settled_date_{shipment_id}",
             )
             acd_number = c4.text_input(
-                "ACD Number", value=g_data.get("acd_number", "")
+                "ACD Number",
+                value=g_data.get("acd_number", ""),
+                key=f"acd_number_{shipment_id}",
             )
 
             group_save_button("acd", {
@@ -1269,18 +1262,21 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 value=pd.to_datetime(g_data.get("draft_recv")).date()
                 if g_data.get("draft_recv")
                 else date.today(),
+                key=f"draft_recv_{shipment_id}",
             )
             final_draft_recv = c2.date_input(
                 "FINAL DRAFT DOC. Received Date",
                 value=pd.to_datetime(g_data.get("final_draft_recv")).date()
                 if g_data.get("final_draft_recv")
                 else date.today(),
+                key=f"final_draft_recv_{shipment_id}",
             )
             final_confirmed = c3.date_input(
                 "Final Draft Confirmed Date",
                 value=pd.to_datetime(g_data.get("final_confirmed")).date()
                 if g_data.get("final_confirmed")
                 else date.today(),
+                key=f"final_confirmed_{shipment_id}",
             )
 
             group_save_button("draft_docs", {
@@ -1300,15 +1296,19 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 value=pd.to_datetime(g_data.get("ssmo_app_date")).date()
                 if g_data.get("ssmo_app_date")
                 else date.today(),
+                key=f"ssmo_app_date_{shipment_id}",
             )
             ssmo_cost = c2.number_input(
-                "SSMO COST", value=float(g_data.get("ssmo_cost", 0.0))
+                "SSMO COST",
+                value=float(g_data.get("ssmo_cost", 0.0)),
+                key=f"ssmo_cost_{shipment_id}",
             )
             ssmo_settled_date = c3.date_input(
                 "SSMO Cost Settled Date",
                 value=pd.to_datetime(g_data.get("ssmo_settled_date")).date()
                 if g_data.get("ssmo_settled_date")
                 else date.today(),
+                key=f"ssmo_settled_date_{shipment_id}",
             )
             ssmo_ref_no = c4.text_input(
                 "Ref. Number",
@@ -1334,15 +1334,19 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 value=pd.to_datetime(g_data.get("mot_proc_date")).date()
                 if g_data.get("mot_proc_date")
                 else date.today(),
+                key=f"mot_proc_date_{shipment_id}",
             )
             mot_cost = c2.number_input(
-                "MOT COST", value=float(g_data.get("mot_cost", 0.0))
+                "MOT COST",
+                value=float(g_data.get("mot_cost", 0.0)),
+                key=f"mot_cost_{shipment_id}",
             )
             mot_settled_date = c3.date_input(
                 "MOT Cost Settled Date",
                 value=pd.to_datetime(g_data.get("mot_settled_date")).date()
                 if g_data.get("mot_settled_date")
                 else date.today(),
+                key=f"mot_settled_date_{shipment_id}",
             )
             mot_ref_no = c4.text_input(
                 "Ref. Number",
@@ -1354,12 +1358,14 @@ elif choice == "📂 Shipment Grouped Details & Actions":
             offshore_mot_pi_no = c5.text_input(
                 "Off Shore MOT APPROVED P.I. NO",
                 value=g_data.get("offshore_mot_pi_no", ""),
+                key=f"offshore_mot_pi_no_{shipment_id}",
             )
             offshore_mot_pi_date = c6.date_input(
                 "Off Shore MOT APPROVED P.I. DATE",
                 value=pd.to_datetime(g_data.get("offshore_mot_pi_date")).date()
                 if g_data.get("offshore_mot_pi_date")
                 else date.today(),
+                key=f"offshore_mot_pi_date_{shipment_id}",
             )
 
             group_save_button("mot", {
@@ -1382,24 +1388,25 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 value=pd.to_datetime(g_data.get("dispatch_date")).date()
                 if g_data.get("dispatch_date")
                 else date.today(),
+                key=f"dispatch_date_{shipment_id}",
             )
             dispatched_via = c2.selectbox(
                 "Dispatched Via",
                 DISPATCH_VIA_LIST,
-                index=DISPATCH_VIA_LIST.index(
-                    g_data.get("dispatched_via", DISPATCH_VIA_LIST[0])
-                )
-                if g_data.get("dispatched_via") in DISPATCH_VIA_LIST
-                else 0,
+                index=get_index_safe(DISPATCH_VIA_LIST, g_data.get("dispatched_via")),
+                key=f"dispatched_via_{shipment_id}",
             )
             tracking_number = c3.text_input(
-                "Tracking Number", value=g_data.get("tracking_number", "")
+                "Tracking Number",
+                value=g_data.get("tracking_number", ""),
+                key=f"tracking_number_{shipment_id}",
             )
             received_date = c4.date_input(
                 "Received Date",
                 value=pd.to_datetime(g_data.get("received_date")).date()
                 if g_data.get("received_date")
                 else date.today(),
+                key=f"received_date_{shipment_id}",
             )
 
             group_save_button("supplier_full_set", {
@@ -1420,21 +1427,18 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 value=pd.to_datetime(g_data.get("doc_dispatch_date")).date()
                 if g_data.get("doc_dispatch_date")
                 else date.today(),
+                key=f"doc_dispatch_date_{shipment_id}",
             )
             off_disp_via = c2.selectbox(
                 "Dispatched Via",
                 DISPATCH_VIA_LIST,
-                key="off_disp_via",
-                index=DISPATCH_VIA_LIST.index(
-                    g_data.get("off_disp_via", DISPATCH_VIA_LIST[0])
-                )
-                if g_data.get("off_disp_via") in DISPATCH_VIA_LIST
-                else 0,
+                index=get_index_safe(DISPATCH_VIA_LIST, g_data.get("off_disp_via")),
+                key=f"off_disp_via_{shipment_id}",
             )
             off_track_no = c3.text_input(
                 "Tracking Number",
                 value=g_data.get("off_track_no", ""),
-                key="off_track_no",
+                key=f"off_track_no_{shipment_id}",
             )
 
             group_save_button("offshore_sender_bank", {
@@ -1446,9 +1450,7 @@ elif choice == "📂 Shipment Grouped Details & Actions":
         # ----------------------------------------------------------------------
         # 8. Sender Bank --> Receiver Bank
         # ----------------------------------------------------------------------
-        with st.expander(
-            "🏦 8. Sender Bank ➔ Receiver Bank", expanded=False
-        ):
+        with st.expander("🏦 8. Sender Bank ➔ Receiver Bank", expanded=False):
             g_data = load_group_data(shipment_id, "sender_to_receiver_bank")
             c1, c2, c3 = st.columns(3)
             bank_dispatch_date = c1.date_input(
@@ -1456,21 +1458,18 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 value=pd.to_datetime(g_data.get("bank_dispatch_date")).date()
                 if g_data.get("bank_dispatch_date")
                 else date.today(),
+                key=f"bank_dispatch_date_{shipment_id}",
             )
             bank_disp_via = c2.selectbox(
                 "Dispatched Via",
                 DISPATCH_VIA_LIST,
-                key="bank_disp_via",
-                index=DISPATCH_VIA_LIST.index(
-                    g_data.get("bank_disp_via", DISPATCH_VIA_LIST[0])
-                )
-                if g_data.get("bank_disp_via") in DISPATCH_VIA_LIST
-                else 0,
+                index=get_index_safe(DISPATCH_VIA_LIST, g_data.get("bank_disp_via")),
+                key=f"bank_disp_via_{shipment_id}",
             )
             bank_track_no = c3.text_input(
                 "Tracking Number",
                 value=g_data.get("bank_track_no", ""),
-                key="bank_track_no",
+                key=f"bank_track_no_{shipment_id}",
             )
 
             group_save_button("sender_to_receiver_bank", {
@@ -1490,47 +1489,65 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 value=pd.to_datetime(g_data.get("inv_date")).date()
                 if g_data.get("inv_date")
                 else date.today(),
+                key=f"inv_date_{shipment_id}",
             )
             due_date = c2.date_input(
                 "DUE DATE",
                 value=pd.to_datetime(g_data.get("due_date")).date()
                 if g_data.get("due_date")
                 else date.today(),
+                key=f"due_date_{shipment_id}",
             )
             due_amt = c3.number_input(
-                "DUE AMOUNT", value=float(g_data.get("due_amt", 0.0))
+                "DUE AMOUNT",
+                value=float(g_data.get("due_amt", 0.0)),
+                key=f"due_amt_{shipment_id}",
             )
 
             c4, c5, c6 = st.columns(3)
             curr_1 = c4.selectbox(
-                "Currency 1", ["USD", "EUR", "SDG", "AED"], key="inv_curr1"
+                "Currency 1",
+                CURRENCY_LIST,
+                index=get_index_safe(CURRENCY_LIST, g_data.get("curr_1")),
+                key=f"inv_curr1_{shipment_id}",
             )
             val_1 = c5.number_input(
-                "Value 1", value=float(g_data.get("val_1", 0.0))
+                "Value 1",
+                value=float(g_data.get("val_1", 0.0)),
+                key=f"val_1_{shipment_id}",
             )
             date_1 = c6.date_input(
                 "Date 1",
                 value=pd.to_datetime(g_data.get("date_1")).date()
                 if g_data.get("date_1")
                 else date.today(),
+                key=f"date_1_{shipment_id}",
             )
 
             c7, c8, c9 = st.columns(3)
             curr_2 = c7.selectbox(
-                "Currency 2", ["USD", "EUR", "SDG", "AED"], key="inv_curr2"
+                "Currency 2",
+                CURRENCY_LIST,
+                index=get_index_safe(CURRENCY_LIST, g_data.get("curr_2")),
+                key=f"inv_curr2_{shipment_id}",
             )
             val_2 = c8.number_input(
-                "Value 2", value=float(g_data.get("val_2", 0.0))
+                "Value 2",
+                value=float(g_data.get("val_2", 0.0)),
+                key=f"val_2_{shipment_id}",
             )
             date_2 = c9.date_input(
                 "Date 2",
                 value=pd.to_datetime(g_data.get("date_2")).date()
                 if g_data.get("date_2")
                 else date.today(),
+                key=f"date_2_{shipment_id}",
             )
 
             supp_remarks = st.text_area(
-                "Supplier REMARKS", value=g_data.get("supp_remarks", "")
+                "Supplier REMARKS",
+                value=g_data.get("supp_remarks", ""),
+                key=f"supp_remarks_{shipment_id}",
             )
 
             group_save_button("supplier_invoice", {
@@ -1553,39 +1570,66 @@ elif choice == "📂 Shipment Grouped Details & Actions":
         with st.expander(f"🌐 10. {off1_name} Related", expanded=False):
             g_data = load_group_data(shipment_id, "offshore_1_related")
             c1, c2, c3, c4 = st.columns(4)
-            c1.text_input("Off Shore Name", value=off1_name, disabled=True)
-            pr_no = c2.text_input("ORION PR NO", value=g_data.get("pr_no", ""))
+            c1.text_input(
+                "Off Shore Name",
+                value=off1_name,
+                disabled=True,
+                key=f"off1_name_{shipment_id}",
+            )
+            pr_no = c2.text_input(
+                "ORION PR NO",
+                value=g_data.get("pr_no", ""),
+                key=f"pr_no_{shipment_id}",
+            )
             orion_po_no = c3.text_input(
-                "ORION PO NO", value=g_data.get("orion_po_no", "")
+                "ORION PO NO",
+                value=g_data.get("orion_po_no", ""),
+                key=f"orion_po_no_{shipment_id}",
             )
             orion_sa = c4.text_input(
-                "ORION SA", value=g_data.get("orion_sa", "")
+                "ORION SA",
+                value=g_data.get("orion_sa", ""),
+                key=f"orion_sa_{shipment_id}",
             )
 
             c5, c6, c7, c8 = st.columns(4)
             orion_grn = c5.text_input(
-                "ORION GRN", value=g_data.get("orion_grn", "")
+                "ORION GRN",
+                value=g_data.get("orion_grn", ""),
+                key=f"orion_grn_{shipment_id}",
             )
             orion_bill_reg = c6.text_input(
-                "ORION BILL REG", value=g_data.get("orion_bill_reg", "")
+                "ORION BILL REG",
+                value=g_data.get("orion_bill_reg", ""),
+                key=f"orion_bill_reg_{shipment_id}",
             )
             orion_inv_no = c7.text_input(
-                "ORION INVOICE No.", value=g_data.get("orion_inv_no", "")
+                "ORION INVOICE No.",
+                value=g_data.get("orion_inv_no", ""),
+                key=f"orion_inv_no_{shipment_id}",
             )
             inv_no = c8.text_input(
-                "Invoice No.", value=g_data.get("inv_no", "")
+                "Invoice No.",
+                value=g_data.get("inv_no", ""),
+                key=f"inv_no_{shipment_id}",
             )
 
             c9, c10, c11 = st.columns(3)
             off_curr = c9.selectbox(
-                "Currency", ["USD", "EUR", "SDG", "AED"], key="off1_curr"
+                "Currency",
+                CURRENCY_LIST,
+                index=get_index_safe(CURRENCY_LIST, g_data.get("off_curr")),
+                key=f"off1_curr_{shipment_id}",
             )
             unit_price_tp = c10.number_input(
                 "Unit Price (at TP Screen)",
                 value=float(g_data.get("unit_price_tp", 0.0)),
+                key=f"unit_price_tp_{shipment_id}",
             )
             tot_val = c11.number_input(
-                "Total Value", value=float(g_data.get("tot_val", 0.0))
+                "Total Value",
+                value=float(g_data.get("tot_val", 0.0)),
+                key=f"tot_val_{shipment_id}",
             )
 
             inv_val_usd = tot_val * FX_RATES.get(off_curr, 1.0)
@@ -1614,22 +1658,33 @@ elif choice == "📂 Shipment Grouped Details & Actions":
             with st.expander(f"🌐 11. {off2_name} Related", expanded=False):
                 g_data = load_group_data(shipment_id, "offshore_2_related")
                 c1, c2, c3 = st.columns(3)
-                c1.text_input("Off Shore Name", value=off2_name, disabled=True)
+                c1.text_input(
+                    "Off Shore Name",
+                    value=off2_name,
+                    disabled=True,
+                    key=f"off2_name_{shipment_id}",
+                )
                 insp_no = c2.text_input(
-                    "INSPECTION NO.", value=g_data.get("insp_no", "")
+                    "INSPECTION NO.",
+                    value=g_data.get("insp_no", ""),
+                    key=f"insp_no_{shipment_id}",
                 )
                 grn_no = c3.text_input(
-                    "GRN NO.", value=g_data.get("grn_no", "")
+                    "GRN NO.",
+                    value=g_data.get("grn_no", ""),
+                    key=f"grn_no_{shipment_id}",
                 )
 
                 c4, c5 = st.columns(2)
                 orion_inv_no2 = c4.text_input(
                     "ORION INVOICE No.",
                     value=g_data.get("orion_inv_no2", ""),
-                    key="orion_inv2",
+                    key=f"orion_inv2_{shipment_id}",
                 )
                 erp_remarks = c5.text_input(
-                    "ERP REMARKS", value=g_data.get("erp_remarks", "")
+                    "ERP REMARKS",
+                    value=g_data.get("erp_remarks", ""),
+                    key=f"erp_remarks_{shipment_id}",
                 )
 
                 group_save_button("offshore_2_related", {
@@ -1648,26 +1703,33 @@ elif choice == "📂 Shipment Grouped Details & Actions":
             with st.expander(f"🌐 12. {off3_name} Related", expanded=False):
                 g_data = load_group_data(shipment_id, "offshore_3_related")
                 c1, c2, c3 = st.columns(3)
-                c1.text_input("Off Shore Name", value=off3_name, disabled=True)
+                c1.text_input(
+                    "Off Shore Name",
+                    value=off3_name,
+                    disabled=True,
+                    key=f"off3_name_{shipment_id}",
+                )
                 insp_no3 = c2.text_input(
                     "INSPECTION NO.",
                     value=g_data.get("insp_no3", ""),
-                    key="insp3",
+                    key=f"insp3_{shipment_id}",
                 )
                 grn_no3 = c3.text_input(
-                    "GRN NO.", value=g_data.get("grn_no3", ""), key="grn3"
+                    "GRN NO.",
+                    value=g_data.get("grn_no3", ""),
+                    key=f"grn3_{shipment_id}",
                 )
 
                 c4, c5 = st.columns(2)
                 orion_inv_no3 = c4.text_input(
                     "ORION INVOICE No.",
                     value=g_data.get("orion_inv_no3", ""),
-                    key="orion_inv3",
+                    key=f"orion_inv3_{shipment_id}",
                 )
                 erp_remarks3 = c5.text_input(
                     "ERP REMARKS",
                     value=g_data.get("erp_remarks3", ""),
-                    key="erp3",
+                    key=f"erp3_{shipment_id}",
                 )
 
                 group_save_button("offshore_3_related", {
@@ -1688,69 +1750,73 @@ elif choice == "📂 Shipment Grouped Details & Actions":
                 "Necessary Good Type",
                 ["Yes", "No"],
                 index=0 if g_data.get("nec_good") == "Yes" else 1,
+                key=f"tr_nec_good_{shipment_id}",
             )
             sender_bank = c2.selectbox(
                 "Sender Bank",
                 BANK_LIST,
-                index=BANK_LIST.index(
-                    g_data.get("sender_bank", BANK_LIST[0])
-                )
-                if g_data.get("sender_bank") in BANK_LIST
-                else 0,
+                index=get_index_safe(BANK_LIST, g_data.get("sender_bank"), 0),
+                key=f"tr_sender_bank_{shipment_id}",
             )
             rec_bank = c3.selectbox(
                 "Receiving Bank",
                 BANK_LIST,
-                key="tr_rec_bank",
-                index=BANK_LIST.index(
-                    g_data.get("rec_bank", BANK_LIST[1])
-                )
-                if g_data.get("rec_bank") in BANK_LIST
-                else 1,
+                index=get_index_safe(BANK_LIST, g_data.get("rec_bank"), 1),
+                key=f"tr_rec_bank_{shipment_id}",
             )
 
             c4, c5, c6 = st.columns(3)
             coll_ref = c4.text_input(
-                "Collection Ref. No", value=g_data.get("coll_ref", "")
+                "Collection Ref. No",
+                value=g_data.get("coll_ref", ""),
+                key=f"coll_ref_{shipment_id}",
             )
             coll_val = c5.number_input(
-                "Collection Value", value=float(g_data.get("coll_val", 0.0))
+                "Collection Value",
+                value=float(g_data.get("coll_val", 0.0)),
+                key=f"coll_val_{shipment_id}",
             )
             coll_curr = c6.selectbox(
                 "Collection Currency",
-                ["USD", "EUR", "SDG", "AED"],
-                key="tr_curr",
+                CURRENCY_LIST,
+                index=get_index_safe(CURRENCY_LIST, g_data.get("coll_curr")),
+                key=f"tr_curr_{shipment_id}",
             )
 
             c7, c8, c9 = st.columns(3)
             tenor = c7.selectbox(
                 "Tenor",
                 TENOR_LIST,
-                index=TENOR_LIST.index(g_data.get("tenor", TENOR_LIST[0]))
-                if g_data.get("tenor") in TENOR_LIST
-                else 0,
+                index=get_index_safe(TENOR_LIST, g_data.get("tenor")),
+                key=f"tenor_{shipment_id}",
             )
             tr_due_date = c8.date_input(
                 "DUE DATE",
                 value=pd.to_datetime(g_data.get("tr_due_date")).date()
                 if g_data.get("tr_due_date")
                 else date.today(),
+                key=f"tr_due_date_{shipment_id}",
             )
             amt_settled = c9.number_input(
-                "Amount Settled", value=float(g_data.get("amt_settled", 0.0))
+                "Amount Settled",
+                value=float(g_data.get("amt_settled", 0.0)),
+                key=f"amt_settled_{shipment_id}",
             )
 
             rem_dues = coll_val - amt_settled
             c10, c11, c12 = st.columns(3)
             c10.metric("Remaining Dues", f"{rem_dues:,.2f} {coll_curr}")
             im_no = c11.text_input(
-                "IM Form No.", value=g_data.get("im_no", "")
+                "IM Form No.",
+                value=g_data.get("im_no", ""),
+                key=f"im_no_{shipment_id}",
             )
             im_date = c12.date_input(
                 "IM Form Date",
                 value=pd.to_datetime(g_data.get("im_date")).date()
                 if g_data.get("im_date")
                 else date.today(),
+                key=f"im_date_{shipment_id}",
             )
 
             s_bank_chg = coll_val * 0.005
@@ -1836,7 +1902,6 @@ elif choice == "📈 Offshore Valuation & Profitability":
                 supp_unit_price = float(row["unit_price"])
                 supp_total = qty * supp_unit_price
 
-                # Assumptions: FX Rate to USD = 1.0 (or converted if SDG/EUR)
                 supp_unit_usd = supp_unit_price * FX_RATES["USD"]
                 supp_total_usd = supp_total * FX_RATES["USD"]
 
@@ -1845,7 +1910,7 @@ elif choice == "📈 Offshore Valuation & Profitability":
                     json.loads(raw_pricing_json) if raw_pricing_json else {}
                 )
 
-                col_meta1, col_meta2, col_meta3, col_meta4 = st.columns(4)
+                col_meta1, col_meta2, col_meta3 = st.columns(3)
                 col_meta1.metric("Qty Shipped", f"{qty:,.0f}")
                 col_meta2.metric("Supplier Price ($)", f"${supp_unit_usd:,.2f}")
                 col_meta3.metric("Supplier Total ($)", f"${supp_total_usd:,.2f}")
@@ -1864,7 +1929,7 @@ elif choice == "📈 Offshore Valuation & Profitability":
                         u_price_off = st.number_input(
                             f"{off_name} Unit Price ($)",
                             value=default_val,
-                            key=f"off_price_{row['shipment_item_id']}_{off_idx}",
+                            key=f"off_price_{row['shipment_item_id']}_{off_idx}_{shipment_id}",
                         )
                         tot_off = qty * u_price_off
 
@@ -1936,51 +2001,57 @@ elif choice == "🏦 Treasury Operations":
             "Necessary Good Type *",
             ["Yes", "No"],
             index=0 if g_data.get("nec_good") == "Yes" else 1,
+            key=f"standalone_nec_good_{shipment_id}",
         )
         sender_bank = c2.selectbox(
             "Sender Bank *",
             BANK_LIST,
-            index=BANK_LIST.index(g_data.get("sender_bank", BANK_LIST[0]))
-            if g_data.get("sender_bank") in BANK_LIST
-            else 0,
+            index=get_index_safe(BANK_LIST, g_data.get("sender_bank"), 0),
+            key=f"standalone_sender_bank_{shipment_id}",
         )
         rec_bank = c3.selectbox(
             "Receiving Bank *",
             BANK_LIST,
-            index=BANK_LIST.index(g_data.get("rec_bank", BANK_LIST[1]))
-            if g_data.get("rec_bank") in BANK_LIST
-            else 1,
+            index=get_index_safe(BANK_LIST, g_data.get("rec_bank"), 1),
+            key=f"standalone_rec_bank_{shipment_id}",
         )
 
         c4, c5, c6 = st.columns(3)
         coll_ref = c4.text_input(
-            "Collection Ref. No", value=g_data.get("coll_ref", "COL-2026-8801")
+            "Collection Ref. No",
+            value=g_data.get("coll_ref", "COL-2026-8801"),
+            key=f"standalone_coll_ref_{shipment_id}",
         )
         coll_val = c5.number_input(
-            "Collection Value", value=float(g_data.get("coll_val", 250000.0))
+            "Collection Value",
+            value=float(g_data.get("coll_val", 250000.0)),
+            key=f"standalone_coll_val_{shipment_id}",
         )
         coll_curr = c6.selectbox(
             "Collection Currency",
-            ["USD", "EUR", "SDG", "AED"],
-            index=0,
+            CURRENCY_LIST,
+            index=get_index_safe(CURRENCY_LIST, g_data.get("coll_curr")),
+            key=f"standalone_coll_curr_{shipment_id}",
         )
 
         c7, c8, c9 = st.columns(3)
         tenor = c7.selectbox(
             "Tenor",
             TENOR_LIST,
-            index=TENOR_LIST.index(g_data.get("tenor", "90 Days"))
-            if g_data.get("tenor") in TENOR_LIST
-            else 3,
+            index=get_index_safe(TENOR_LIST, g_data.get("tenor"), 3),
+            key=f"standalone_tenor_{shipment_id}",
         )
         tr_due_date = c8.date_input(
             "DUE DATE",
             value=pd.to_datetime(g_data.get("tr_due_date")).date()
             if g_data.get("tr_due_date")
             else date.today() + timedelta(days=90),
+            key=f"standalone_tr_due_date_{shipment_id}",
         )
         amt_settled = c9.number_input(
-            "Amount Settled", value=float(g_data.get("amt_settled", 50000.0))
+            "Amount Settled",
+            value=float(g_data.get("amt_settled", 50000.0)),
+            key=f"standalone_amt_settled_{shipment_id}",
         )
 
         rem_dues = coll_val - amt_settled
@@ -1993,13 +2064,16 @@ elif choice == "🏦 Treasury Operations":
         st.markdown("---")
         c10, c11 = st.columns(2)
         im_no = c10.text_input(
-            "IM Form No.", value=g_data.get("im_no", "IM-2026-9912")
+            "IM Form No.",
+            value=g_data.get("im_no", "IM-2026-9912"),
+            key=f"standalone_im_no_{shipment_id}",
         )
         im_date = c11.date_input(
             "IM Form Date",
             value=pd.to_datetime(g_data.get("im_date")).date()
             if g_data.get("im_date")
             else date.today(),
+            key=f"standalone_im_date_{shipment_id}",
         )
 
         s_bank_chg = coll_val * 0.005
