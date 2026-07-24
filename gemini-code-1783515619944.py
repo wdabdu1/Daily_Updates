@@ -6,10 +6,50 @@ import streamlit as st
 
 # --- STREAMLIT PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="Supply Chain & Clearance Engine",
+    page_title="Supply Chain, Offshore & Treasury Engine",
     page_icon="🚢",
     layout="wide",
 )
+
+# --- FX CONVERSION RATES TO USD ---
+FX_RATES = {
+    "USD": 1.0,
+    "EUR": 1.08,
+    "SDG": 0.00037,
+    "AED": 0.272,
+}
+
+FORWARDER_LIST = [
+    "DHS Logistics",
+    "Kuehne+Nagel",
+    "DB Schenker",
+    "Maersk Line",
+    "Bollore Africa",
+    "Custom Forwarder",
+]
+BANK_LIST = [
+    "Bank of Khartoum",
+    "Omdurman National Bank",
+    "Faisal Islamic Bank",
+    "Standard Chartered FZE",
+    "Emirates NBD",
+    "Mashreq Bank",
+]
+DISPATCH_VIA_LIST = [
+    "DHL Express",
+    "FedEx",
+    "Aramex",
+    "Diplomatic Pouch",
+    "Hand Delivery",
+]
+TENOR_LIST = [
+    "Sight",
+    "30 Days",
+    "60 Days",
+    "90 Days",
+    "120 Days",
+    "180 Days",
+]
 
 
 # --- HELPERS: PARSING & FORMATTING ---
@@ -131,12 +171,25 @@ def init_db():
             qty_shipped REAL,
             unit_price REAL,
             total_shipped_value REAL,
+            offshore_pricing_json TEXT,
             FOREIGN KEY(shipment_id) REFERENCES shipments(shipment_id),
             FOREIGN KEY(po_item_id) REFERENCES po_line_items(item_id)
         )
     """)
 
-    # 5. Process Tasks Table
+    # 5. Grouped Actions / Key-Value Details per Shipment
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shipment_group_data (
+            shipment_id INTEGER,
+            group_key TEXT,
+            data_json TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (shipment_id, group_key),
+            FOREIGN KEY(shipment_id) REFERENCES shipments(shipment_id)
+        )
+    """)
+
+    # 6. Process Tasks Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS process_tasks (
             task_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,8 +232,8 @@ def init_db():
                 (today - timedelta(days=15)).isoformat(),
                 (today + timedelta(days=30)).isoformat(),
                 json.dumps([
-                    "Offshore Logistics Trading FZE",
-                    "Global Maritime Ltd",
+                    "Red Sea Trading FZE",
+                    "Apex Global Offshore Ltd",
                 ]),
                 (today - timedelta(days=18)).isoformat(),
                 (today - timedelta(days=15)).isoformat(),
@@ -212,6 +265,22 @@ def init_db():
             " 'BL-2026-PORT-101'"
         )
         shp1_id = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO shipment_line_items (shipment_id, po_item_id, category, model_product, type, qty_shipped, unit_price, total_shipped_value, offshore_pricing_json)
+            VALUES 
+            (?, 1, 'Machinery', 'CAT 500KW Generator', 'Heavy Duty', 2, 100000.0, 200000.0, ?),
+            (?, 2, 'Spare Parts', 'Air Filter Set', 'OEM Replacement', 50, 1000.0, 50000.0, ?)
+        """,
+            (
+                shp1_id,
+                json.dumps({"0": 110000.0, "1": 115000.0}),
+                shp1_id,
+                json.dumps({"0": 1150.0, "1": 1200.0}),
+            ),
+        )
+
         seed_tasks_for_shipment(cursor, shp1_id)
 
     conn.commit()
@@ -331,6 +400,40 @@ def update_master_order_total(conn, po_number):
         (total_val, po_number),
     )
     conn.commit()
+
+
+def save_group_data(shipment_id: int, group_key: str, data_dict: dict):
+    """Saves grouped form inputs for a specific shipment."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO shipment_group_data (shipment_id, group_key, data_json)
+        VALUES (?, ?, ?)
+        ON CONFLICT(shipment_id, group_key) DO UPDATE SET
+            data_json = excluded.data_json,
+            updated_at = CURRENT_TIMESTAMP
+    """,
+        (shipment_id, group_key, json.dumps(data_dict)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_group_data(shipment_id: int, group_key: str) -> dict:
+    """Loads stored group form inputs for a shipment."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT data_json FROM shipment_group_data WHERE shipment_id = ? AND"
+        " group_key = ?",
+        (shipment_id, group_key),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row and row["data_json"]:
+        return json.loads(row["data_json"])
+    return {}
 
 
 init_db()
@@ -474,6 +577,9 @@ st.sidebar.title("🚢 Supply Chain Hub")
 menu = [
     "📦 Master Orders & Line Items",
     "🚢 Attach Shipment (BL/AWB)",
+    "📂 Shipment Grouped Details & Actions",
+    "📈 Offshore Valuation & Profitability",
+    "🏦 Treasury Operations",
     "📋 Clearance Task Engine",
     "📊 Clearance & SLA Analytics",
     "⚙️ Target SLA Settings",
@@ -491,11 +597,9 @@ if choice == "📦 Master Orders & Line Items":
         ["1️⃣ Create / Manage PO & Line Items", "2️⃣ Master Order Registry"]
     )
 
-    # --- TAB 1: CREATE MASTER ORDER & LINE ITEMS ---
     with tab1:
         st.subheader("1️⃣ Create Master Order Header")
 
-        # --- SECTION 1: HEADER IDENTIFICATION & ENTITIES ---
         st.markdown("##### 🏢 Order Identity & Business Entities")
         c1, c2, c3 = st.columns(3)
         po_number = c1.text_input(
@@ -530,11 +634,10 @@ if choice == "📦 Master Orders & Line Items":
         )
 
         st.markdown("---")
-        # --- DYNAMIC OFFSHORE COMPANIES INPUT SECTION ---
         st.markdown("##### 🏢 Offshore Companies (Dynamic Multiple Entities)")
         st.caption(
-            "Provide Offshore Company 1, and optionally add 2 or more additional"
-            " companies."
+            "Provide Offshore Company 1, and optionally add Offshore 2, Offshore"
+            " 3, etc."
         )
 
         if "offshore_companies_list" not in st.session_state:
@@ -562,7 +665,6 @@ if choice == "📦 Master Orders & Line Items":
             st.rerun()
 
         st.markdown("---")
-        # --- SECTION 2: PROFORMA INVOICE (PI), OFFSHORE PO & SHIPPING TERMS ---
         st.markdown("##### 📄 Supplier PI, Offshore PO & Shipping Terms")
         c8, c9, c10, c11 = st.columns(4)
         supplier_pi_no = c8.text_input(
@@ -607,7 +709,6 @@ if choice == "📦 Master Orders & Line Items":
         )
 
         st.markdown("---")
-        # --- SECTION 3: KEY MILESTONE DATES ---
         st.markdown("##### 📅 Key Milestone Dates")
         d1, d2, d3, d4, d5 = st.columns(5)
         rec_signed_pi_date = d1.date_input("Received Signed PI Date", value=date.today())
@@ -617,7 +718,6 @@ if choice == "📦 Master Orders & Line Items":
         latest_shipment_date = d5.date_input("Latest Shipment Date", value=date.today() + timedelta(days=60))
 
         st.markdown("---")
-        # --- SAVE MASTER ORDER HEADER BUTTON ---
         if st.button(
             "💾 Save Master Order Header",
             use_container_width=True,
@@ -675,18 +775,15 @@ if choice == "📦 Master Orders & Line Items":
                     st.session_state["active_po_for_items"] = po_number.strip()
                     st.success(
                         f"Master Order Header **{po_number.strip()}** saved"
-                        " successfully! You can now add Line Items below."
+                        " successfully!"
                     )
                     st.rerun()
                 except sqlite3.IntegrityError:
-                    st.error(f"PO Number '{po_number.strip()}' already exists in the system.")
+                    st.error(f"PO Number '{po_number.strip()}' already exists.")
                 finally:
                     conn.close()
 
         st.markdown("---")
-        # ==============================================================================
-        # SECTION 2: PO LINE ITEMS ENTRY (LOCKED UNTIL MASTER IS SAVED OR SELECTED)
-        # ==============================================================================
         st.subheader("2️⃣ PO Line Items Entry")
 
         conn = get_db_connection()
@@ -698,12 +795,10 @@ if choice == "📦 Master Orders & Line Items":
         if all_master_pos.empty:
             st.warning(
                 "🔒 **PO Line Items Entry is locked.** Please fill out and save a"
-                " Master Order Header above to enable line item additions."
+                " Master Order Header above."
             )
         else:
             po_list = all_master_pos["po_number"].tolist()
-            
-            # Auto-select the newly created PO if available in session state
             default_index = 0
             if (
                 "active_po_for_items" in st.session_state
@@ -718,7 +813,6 @@ if choice == "📦 Master Orders & Line Items":
                 format_func=lambda x: f"{x} — {all_master_pos[all_master_pos['po_number'] == x]['supplier_name'].values[0]} ({all_master_pos[all_master_pos['po_number'] == x]['bu_id'].values[0]})",
             )
 
-            # Display currently saved items for the selected PO
             current_items_df = pd.read_sql_query(
                 "SELECT item_id, category, model_product, type, ordered_qty, unit_price, total_value, currency, hs_code, ssmo_required FROM po_line_items WHERE po_number = ?",
                 conn,
@@ -804,13 +898,12 @@ if choice == "📦 Master Orders & Line Items":
                         conn.commit()
                         update_master_order_total(conn, selected_open_po)
                         st.success(
-                            f"Line item '{model_product.strip()}' successfully added to **{selected_open_po}**!"
+                            f"Line item '{model_product.strip()}' successfully added!"
                         )
                         st.rerun()
 
         conn.close()
 
-    # --- TAB 2: MASTER ORDER REGISTRY ---
     with tab2:
         st.subheader("📋 Registered Master Orders Registry")
         conn = get_db_connection()
@@ -824,85 +917,11 @@ if choice == "📦 Master Orders & Line Items":
                 format_amount
             )
             st.dataframe(mo_df, use_container_width=True, hide_index=True)
-
-            st.markdown("---")
-            st.subheader("🔎 Complete Header & Line Item Inspection")
-            selected_inspect_po = st.selectbox(
-                "Select Master Order to Inspect:", mo_df["po_number"].tolist()
-            )
-
-            po_full_details = dict(
-                conn.execute(
-                    "SELECT * FROM master_orders WHERE po_number = ?",
-                    (selected_inspect_po,),
-                ).fetchone()
-            )
-
-            with st.expander("📌 Full Master Order Metadata", expanded=True):
-                m_c1, m_c2, m_c3, m_c4 = st.columns(4)
-                m_c1.write(f"**PO Number:** {po_full_details.get('po_number')}")
-                m_c1.write(f"**BU:** {po_full_details.get('bu_id')}")
-                m_c1.write(f"**Division:** {po_full_details.get('division')}")
-                m_c1.write(f"**Mode:** {po_full_details.get('mode_of_shipment')}")
-
-                m_c2.write(f"**Supplier:** {po_full_details.get('supplier_name')}")
-                m_c2.write(f"**Brand/Manuf.:** {po_full_details.get('brand_manufacturer')}")
-                m_c2.write(f"**Approval Type:** {po_full_details.get('approval_type')}")
-                m_c2.write(f"**Consignee:** {po_full_details.get('consignee')}")
-
-                m_c3.write(f"**Supplier PI No:** {po_full_details.get('supplier_pi_no')}")
-                m_c3.write(f"**Supplier PI Date:** {po_full_details.get('supplier_pi_date')}")
-                m_c3.write(f"**Offshore PO No:** {po_full_details.get('offshore_po_no')}")
-                m_c3.write(f"**Offshore PO Date:** {po_full_details.get('offshore_po_date')}")
-
-                offshore_json_val = po_full_details.get("offshore_companies_json", "[]")
-                offshore_co_list = json.loads(offshore_json_val) if offshore_json_val else []
-                m_c4.write(f"**Offshore Companies:** {', '.join(offshore_co_list) if offshore_co_list else 'None'}")
-                m_c4.write(f"**BU Shipping Budget:** {format_amount(po_full_details.get('bu_est_shipping_cost'))}")
-                m_c4.write(f"**Incoterm / Origin:** {po_full_details.get('incoterm')} / {po_full_details.get('country_of_origin')}")
-
-            col_li, col_sh = st.columns(2)
-            with col_li:
-                st.markdown("**Itemized Line Breakdown:**")
-                items_df = pd.read_sql_query(
-                    "SELECT category, model_product, type, ordered_qty, unit_price, total_value, currency, hs_code FROM po_line_items WHERE po_number = ?",
-                    conn,
-                    params=(selected_inspect_po,),
-                )
-                if not items_df.empty:
-                    items_df["unit_price"] = items_df["unit_price"].apply(
-                        format_amount
-                    )
-                    items_df["total_value"] = items_df["total_value"].apply(
-                        format_amount
-                    )
-                    st.dataframe(
-                        items_df, use_container_width=True, hide_index=True
-                    )
-                else:
-                    st.info("No line items recorded for this PO.")
-
-            with col_sh:
-                st.markdown("**Linked Shipments:**")
-                shp_linked_df = pd.read_sql_query(
-                    "SELECT bl_awb, supplier_invoice_no, clear_at, est_arrival_date FROM shipments WHERE po_number = ?",
-                    conn,
-                    params=(selected_inspect_po,),
-                )
-                if not shp_linked_df.empty:
-                    st.dataframe(
-                        shp_linked_df,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                else:
-                    st.info("No shipments linked to this PO yet.")
-
         conn.close()
 
 
 # ==============================================================================
-# MODULE 2: ATTACH SHIPMENT & SHIPMENT LINE ITEMS
+# MODULE 2: ATTACH SHIPMENT (BL/AWB)
 # ==============================================================================
 elif choice == "🚢 Attach Shipment (BL/AWB)":
     st.title("🚢 Attach Shipment & Invoice Details to Master Order")
@@ -934,24 +953,16 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
             "Supplier Invoice Date", value=date.today()
         )
 
-        col4, col5, col6 = st.columns(3)
-        clear_at = col4.selectbox(
-            "Initial Clearance Route Track", ["Port", "Free Zone", "Pending"]
-        )
-        est_arrival = col5.date_input(
+        col4, col5 = st.columns(2)
+        est_arrival = col4.date_input(
             "Estimated Arrival Date (ETA)", value=date.today()
         )
-        notes = col6.text_area(
+        notes = col5.text_area(
             "Shipment Notes", placeholder="Cargo details, container numbers..."
         )
 
         st.markdown("---")
         st.markdown("##### 🛒 Shipment Item Level Breakdown")
-        st.caption(
-            "Select Model/Product from Master Order to auto-complete Category"
-            " & Type. Enter QTY Shipped and Unit Price."
-        )
-
         po_items_df = pd.read_sql_query(
             "SELECT item_id, category, model_product, type, ordered_qty, unit_price FROM po_line_items WHERE po_number = ?",
             conn,
@@ -973,20 +984,14 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
 
             sh_c1, sh_c2, sh_c3 = st.columns(3)
             sh_c1.text_input(
-                "Category (Auto-completed)",
-                value=po_item_row["category"],
-                disabled=True,
+                "Category", value=po_item_row["category"], disabled=True
             )
             sh_c2.text_input(
                 "Model / Product",
                 value=po_item_row["model_product"],
                 disabled=True,
             )
-            sh_c3.text_input(
-                "Type (Auto-completed)",
-                value=po_item_row["type"],
-                disabled=True,
-            )
+            sh_c3.text_input("Type", value=po_item_row["type"], disabled=True)
 
             sh_c4, sh_c5, sh_c6 = st.columns(3)
             qty_shipped = sh_c4.number_input(
@@ -995,8 +1000,7 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
                 value=float(po_item_row["ordered_qty"]),
             )
             u_price_sh_raw = sh_c5.text_input(
-                "UNIT PRICE (TP Screen) *",
-                value=format_amount(po_item_row["unit_price"]),
+                "UNIT PRICE *", value=format_amount(po_item_row["unit_price"])
             )
             unit_price_sh = parse_amount(u_price_sh_raw)
 
@@ -1063,7 +1067,7 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
                     cursor.execute(
                         """
                         INSERT INTO shipments (bl_awb, po_number, bu_id, supplier_invoice_no, supplier_invoice_date, clear_at, est_arrival_date, notes)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, 'Port', ?, ?)
                     """,
                         (
                             bl_awb.strip(),
@@ -1071,7 +1075,6 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
                             po_row["bu_id"],
                             supplier_invoice_no.strip(),
                             supplier_invoice_date.isoformat(),
-                            clear_at,
                             est_arrival.isoformat(),
                             notes,
                         ),
@@ -1107,20 +1110,904 @@ elif choice == "🚢 Attach Shipment (BL/AWB)":
                 except sqlite3.IntegrityError:
                     st.error(f"Shipment with BL/AWB '{bl_awb}' already exists.")
 
-    st.markdown("---")
-    st.subheader("📌 Active Shipments Pipeline")
-    shp_df = pd.read_sql_query(
-        "SELECT shipment_id, bl_awb, po_number, bu_id, supplier_invoice_no, supplier_invoice_date, clear_at, est_arrival_date FROM shipments ORDER BY created_at DESC",
+    conn.close()
+
+
+# ==============================================================================
+# MODULE 3: SHIPMENT GROUPED DETAILS & ACTIONS (13 WORKFLOW GROUPS)
+# ==============================================================================
+elif choice == "📂 Shipment Grouped Details & Actions":
+    st.title("📂 Shipment Level Grouped Actions & Entry")
+
+    conn = get_db_connection()
+    shipments_df = pd.read_sql_query(
+        "SELECT s.shipment_id, s.bl_awb, s.po_number, m.offshore_companies_json, m.bu_est_shipping_cost FROM shipments s JOIN master_orders m ON s.po_number = m.po_number",
         conn,
     )
     conn.close()
 
-    if not shp_df.empty:
-        st.dataframe(shp_df, use_container_width=True, hide_index=True)
+    if shipments_df.empty:
+        st.warning("No active shipments available. Attach a shipment first.")
+    else:
+        selected_bl = st.selectbox(
+            "Select BL/AWB Shipment *", shipments_df["bl_awb"].tolist()
+        )
+        shp_row = shipments_df[shipments_df["bl_awb"] == selected_bl].iloc[0]
+        shipment_id = int(shp_row["shipment_id"])
+        bu_est_shipping = float(shp_row["bu_est_shipping_cost"] or 0.0)
+
+        # Parse linked offshore companies from Master Order
+        raw_offshores = shp_row["offshore_companies_json"]
+        offshore_list = (
+            json.loads(raw_offshores)
+            if raw_offshores
+            else ["Primary Offshore"]
+        )
+        if not offshore_list:
+            offshore_list = ["Primary Offshore"]
+
+        st.info(
+            f"Linked PO: **{shp_row['po_number']}** | Configured Offshore"
+            f" Entities: **{', '.join(offshore_list)}**"
+        )
+
+        # helper function to render save button at end of each group
+        def group_save_button(group_key, data_dict):
+            if st.button(
+                f"💾 Save {group_key.replace('_', ' ').title()} Group Data",
+                key=f"save_btn_{group_key}_{shipment_id}",
+            ):
+                save_group_data(shipment_id, group_key, data_dict)
+                st.success(
+                    f"Saved {group_key.replace('_', ' ').title()} information!"
+                )
+                st.rerun()
+
+        # ----------------------------------------------------------------------
+        # 1. Forwarder Group
+        # ----------------------------------------------------------------------
+        with st.expander("🚚 1. Forwarder Group", expanded=False):
+            g_data = load_group_data(shipment_id, "forwarder")
+            c1, c2, c3 = st.columns(3)
+            fwd_name = c1.selectbox(
+                "Forwarder Name",
+                FORWARDER_LIST,
+                index=FORWARDER_LIST.index(g_data.get("fwd_name", FORWARDER_LIST[0]))
+                if g_data.get("fwd_name") in FORWARDER_LIST
+                else 0,
+            )
+            act_ship_cost = c2.number_input(
+                "Actual Shipping Cost",
+                value=float(g_data.get("act_ship_cost", 0.0)),
+            )
+            act_ship_cost_usd = c3.number_input(
+                "Actual Shipping Cost $",
+                value=float(g_data.get("act_ship_cost_usd", 0.0)),
+            )
+
+            c4, c5 = st.columns(2)
+            amt_saved = bu_est_shipping - act_ship_cost_usd
+            c4.metric(
+                "Amount Saved in Shipping Cost ($)", f"${amt_saved:,.2f}"
+            )
+            marine_ins = c5.selectbox(
+                "Marine Insurance",
+                ["Yes", "No"],
+                index=0 if g_data.get("marine_ins") == "Yes" else 1,
+            )
+
+            group_save_button("forwarder", {
+                "fwd_name": fwd_name,
+                "act_ship_cost": act_ship_cost,
+                "act_ship_cost_usd": act_ship_cost_usd,
+                "amt_saved": amt_saved,
+                "marine_ins": marine_ins,
+            })
+
+        # ----------------------------------------------------------------------
+        # 2. ACD Group
+        # ----------------------------------------------------------------------
+        with st.expander("📌 2. ACD (Advance Cargo Declaration)", expanded=False):
+            g_data = load_group_data(shipment_id, "acd")
+            c1, c2, c3, c4 = st.columns(4)
+            acd_date = c1.date_input(
+                "ACD Process Date",
+                value=pd.to_datetime(g_data.get("acd_date")).date()
+                if g_data.get("acd_date")
+                else date.today(),
+            )
+            acd_cost_usd = c2.number_input(
+                "ACD COST $", value=float(g_data.get("acd_cost_usd", 0.0))
+            )
+            acd_settled_date = c3.date_input(
+                "ACD Cost Settled Date",
+                value=pd.to_datetime(g_data.get("acd_settled_date")).date()
+                if g_data.get("acd_settled_date")
+                else date.today(),
+            )
+            acd_number = c4.text_input(
+                "ACD Number", value=g_data.get("acd_number", "")
+            )
+
+            group_save_button("acd", {
+                "acd_date": acd_date.isoformat(),
+                "acd_cost_usd": acd_cost_usd,
+                "acd_settled_date": acd_settled_date.isoformat(),
+                "acd_number": acd_number,
+            })
+
+        # ----------------------------------------------------------------------
+        # 3. Draft Documents
+        # ----------------------------------------------------------------------
+        with st.expander("📄 3. Draft Documents", expanded=False):
+            g_data = load_group_data(shipment_id, "draft_docs")
+            c1, c2, c3 = st.columns(3)
+            draft_recv = c1.date_input(
+                "DRAFT DOC RECV DATE",
+                value=pd.to_datetime(g_data.get("draft_recv")).date()
+                if g_data.get("draft_recv")
+                else date.today(),
+            )
+            final_draft_recv = c2.date_input(
+                "FINAL DRAFT DOC. Received Date",
+                value=pd.to_datetime(g_data.get("final_draft_recv")).date()
+                if g_data.get("final_draft_recv")
+                else date.today(),
+            )
+            final_confirmed = c3.date_input(
+                "Final Draft Confirmed Date",
+                value=pd.to_datetime(g_data.get("final_confirmed")).date()
+                if g_data.get("final_confirmed")
+                else date.today(),
+            )
+
+            group_save_button("draft_docs", {
+                "draft_recv": draft_recv.isoformat(),
+                "final_draft_recv": final_draft_recv.isoformat(),
+                "final_confirmed": final_confirmed.isoformat(),
+            })
+
+        # ----------------------------------------------------------------------
+        # 4. SSMO Group
+        # ----------------------------------------------------------------------
+        with st.expander("🔬 4. SSMO (Standards Inspection)", expanded=False):
+            g_data = load_group_data(shipment_id, "ssmo")
+            c1, c2, c3, c4 = st.columns(4)
+            ssmo_app_date = c1.date_input(
+                "Certificate Application Date",
+                value=pd.to_datetime(g_data.get("ssmo_app_date")).date()
+                if g_data.get("ssmo_app_date")
+                else date.today(),
+            )
+            ssmo_cost = c2.number_input(
+                "SSMO COST", value=float(g_data.get("ssmo_cost", 0.0))
+            )
+            ssmo_settled_date = c3.date_input(
+                "SSMO Cost Settled Date",
+                value=pd.to_datetime(g_data.get("ssmo_settled_date")).date()
+                if g_data.get("ssmo_settled_date")
+                else date.today(),
+            )
+            ssmo_ref_no = c4.text_input(
+                "Ref. Number", value=g_data.get("ssmo_ref_no", "")
+            )
+
+            group_save_button("ssmo", {
+                "ssmo_app_date": ssmo_app_date.isoformat(),
+                "ssmo_cost": ssmo_cost,
+                "ssmo_settled_date": ssmo_settled_date.isoformat(),
+                "ssmo_ref_no": ssmo_ref_no,
+            })
+
+        # ----------------------------------------------------------------------
+        # 5. MOT Group
+        # ----------------------------------------------------------------------
+        with st.expander("🏛️ 5. MOT (Ministry of Trade)", expanded=False):
+            g_data = load_group_data(shipment_id, "mot")
+            c1, c2, c3, c4 = st.columns(4)
+            mot_proc_date = c1.date_input(
+                "MOT Process Date",
+                value=pd.to_datetime(g_data.get("mot_proc_date")).date()
+                if g_data.get("mot_proc_date")
+                else date.today(),
+            )
+            mot_cost = c2.number_input(
+                "MOT COST", value=float(g_data.get("mot_cost", 0.0))
+            )
+            mot_settled_date = c3.date_input(
+                "MOT Cost Settled Date",
+                value=pd.to_datetime(g_data.get("mot_settled_date")).date()
+                if g_data.get("mot_settled_date")
+                else date.today(),
+            )
+            mot_ref_no = c4.text_input(
+                "Ref. Number", value=g_data.get("mot_ref_no", "")
+            )
+
+            c5, c6 = st.columns(2)
+            offshore_mot_pi_no = c5.text_input(
+                "Off Shore MOT APPROVED P.I. NO",
+                value=g_data.get("offshore_mot_pi_no", ""),
+            )
+            offshore_mot_pi_date = c6.date_input(
+                "Off Shore MOT APPROVED P.I. DATE",
+                value=pd.to_datetime(g_data.get("offshore_mot_pi_date")).date()
+                if g_data.get("offshore_mot_pi_date")
+                else date.today(),
+            )
+
+            group_save_button("mot", {
+                "mot_proc_date": mot_proc_date.isoformat(),
+                "mot_cost": mot_cost,
+                "mot_settled_date": mot_settled_date.isoformat(),
+                "mot_ref_no": mot_ref_no,
+                "offshore_mot_pi_no": offshore_mot_pi_no,
+                "offshore_mot_pi_date": offshore_mot_pi_date.isoformat(),
+            })
+
+        # ----------------------------------------------------------------------
+        # 6. Supplier Full Set
+        # ----------------------------------------------------------------------
+        with st.expander("📦 6. Supplier Full Set Documents", expanded=False):
+            g_data = load_group_data(shipment_id, "supplier_full_set")
+            c1, c2, c3, c4 = st.columns(4)
+            dispatch_date = c1.date_input(
+                "Dispatch Date",
+                value=pd.to_datetime(g_data.get("dispatch_date")).date()
+                if g_data.get("dispatch_date")
+                else date.today(),
+            )
+            dispatched_via = c2.selectbox(
+                "Dispatched Via",
+                DISPATCH_VIA_LIST,
+                index=DISPATCH_VIA_LIST.index(
+                    g_data.get("dispatched_via", DISPATCH_VIA_LIST[0])
+                )
+                if g_data.get("dispatched_via") in DISPATCH_VIA_LIST
+                else 0,
+            )
+            tracking_number = c3.text_input(
+                "Tracking Number", value=g_data.get("tracking_number", "")
+            )
+            received_date = c4.date_input(
+                "Received Date",
+                value=pd.to_datetime(g_data.get("received_date")).date()
+                if g_data.get("received_date")
+                else date.today(),
+            )
+
+            group_save_button("supplier_full_set", {
+                "dispatch_date": dispatch_date.isoformat(),
+                "dispatched_via": dispatched_via,
+                "tracking_number": tracking_number,
+                "received_date": received_date.isoformat(),
+            })
+
+        # ----------------------------------------------------------------------
+        # 7. Offshore -> Sender Bank
+        # ----------------------------------------------------------------------
+        with st.expander("🏦 7. Offshore ➔ Sender Bank", expanded=False):
+            g_data = load_group_data(shipment_id, "offshore_sender_bank")
+            c1, c2, c3 = st.columns(3)
+            doc_dispatch_date = c1.date_input(
+                "Doc. Dispatch Date",
+                value=pd.to_datetime(g_data.get("doc_dispatch_date")).date()
+                if g_data.get("doc_dispatch_date")
+                else date.today(),
+            )
+            off_disp_via = c2.selectbox(
+                "Dispatched Via",
+                DISPATCH_VIA_LIST,
+                key="off_disp_via",
+                index=DISPATCH_VIA_LIST.index(
+                    g_data.get("off_disp_via", DISPATCH_VIA_LIST[0])
+                )
+                if g_data.get("off_disp_via") in DISPATCH_VIA_LIST
+                else 0,
+            )
+            off_track_no = c3.text_input(
+                "Tracking Number",
+                value=g_data.get("off_track_no", ""),
+                key="off_track_no",
+            )
+
+            group_save_button("offshore_sender_bank", {
+                "doc_dispatch_date": doc_dispatch_date.isoformat(),
+                "off_disp_via": off_disp_via,
+                "off_track_no": off_track_no,
+            })
+
+        # ----------------------------------------------------------------------
+        # 8. Sender Bank --> Receiver Bank
+        # ----------------------------------------------------------------------
+        with st.expander(
+            "🏦 8. Sender Bank ➔ Receiver Bank", expanded=False
+        ):
+            g_data = load_group_data(shipment_id, "sender_to_receiver_bank")
+            c1, c2, c3 = st.columns(3)
+            bank_dispatch_date = c1.date_input(
+                "Dispatch Date",
+                value=pd.to_datetime(g_data.get("bank_dispatch_date")).date()
+                if g_data.get("bank_dispatch_date")
+                else date.today(),
+            )
+            bank_disp_via = c2.selectbox(
+                "Dispatched Via",
+                DISPATCH_VIA_LIST,
+                key="bank_disp_via",
+                index=DISPATCH_VIA_LIST.index(
+                    g_data.get("bank_disp_via", DISPATCH_VIA_LIST[0])
+                )
+                if g_data.get("bank_disp_via") in DISPATCH_VIA_LIST
+                else 0,
+            )
+            bank_track_no = c3.text_input(
+                "Tracking Number",
+                value=g_data.get("bank_track_no", ""),
+                key="bank_track_no",
+            )
+
+            group_save_button("sender_to_receiver_bank", {
+                "bank_dispatch_date": bank_dispatch_date.isoformat(),
+                "bank_disp_via": bank_disp_via,
+                "bank_track_no": bank_track_no,
+            })
+
+        # ----------------------------------------------------------------------
+        # 9. Supplier Invoice
+        # ----------------------------------------------------------------------
+        with st.expander("🧾 9. Supplier Invoice Details", expanded=False):
+            g_data = load_group_data(shipment_id, "supplier_invoice")
+            c1, c2, c3 = st.columns(3)
+            inv_date = c1.date_input(
+                "Invoice Date",
+                value=pd.to_datetime(g_data.get("inv_date")).date()
+                if g_data.get("inv_date")
+                else date.today(),
+            )
+            due_date = c2.date_input(
+                "DUE DATE",
+                value=pd.to_datetime(g_data.get("due_date")).date()
+                if g_data.get("due_date")
+                else date.today(),
+            )
+            due_amt = c3.number_input(
+                "DUE AMOUNT", value=float(g_data.get("due_amt", 0.0))
+            )
+
+            c4, c5, c6 = st.columns(3)
+            curr_1 = c4.selectbox(
+                "Currency 1", ["USD", "EUR", "SDG", "AED"], key="inv_curr1"
+            )
+            val_1 = c5.number_input(
+                "Value 1", value=float(g_data.get("val_1", 0.0))
+            )
+            date_1 = c6.date_input(
+                "Date 1",
+                value=pd.to_datetime(g_data.get("date_1")).date()
+                if g_data.get("date_1")
+                else date.today(),
+            )
+
+            c7, c8, c9 = st.columns(3)
+            curr_2 = c7.selectbox(
+                "Currency 2", ["USD", "EUR", "SDG", "AED"], key="inv_curr2"
+            )
+            val_2 = c8.number_input(
+                "Value 2", value=float(g_data.get("val_2", 0.0))
+            )
+            date_2 = c9.date_input(
+                "Date 2",
+                value=pd.to_datetime(g_data.get("date_2")).date()
+                if g_data.get("date_2")
+                else date.today(),
+            )
+
+            supp_remarks = st.text_area(
+                "Supplier REMARKS", value=g_data.get("supp_remarks", "")
+            )
+
+            group_save_button("supplier_invoice", {
+                "inv_date": inv_date.isoformat(),
+                "due_date": due_date.isoformat(),
+                "due_amt": due_amt,
+                "curr_1": curr_1,
+                "val_1": val_1,
+                "date_1": date_1.isoformat(),
+                "curr_2": curr_2,
+                "val_2": val_2,
+                "date_2": date_2.isoformat(),
+                "supp_remarks": supp_remarks,
+            })
+
+        # ----------------------------------------------------------------------
+        # 10. OFFSHORE-1 RELATED (Dynamic Company Name)
+        # ----------------------------------------------------------------------
+        off1_name = offshore_list[0]
+        with st.expander(f"🌐 10. {off1_name} Related", expanded=False):
+            g_data = load_group_data(shipment_id, "offshore_1_related")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.text_input("Off Shore Name", value=off1_name, disabled=True)
+            pr_no = c2.text_input("ORION PR NO", value=g_data.get("pr_no", ""))
+            orion_po_no = c3.text_input(
+                "ORION PO NO", value=g_data.get("orion_po_no", "")
+            )
+            orion_sa = c4.text_input(
+                "ORION SA", value=g_data.get("orion_sa", "")
+            )
+
+            c5, c6, c7, c8 = st.columns(4)
+            orion_grn = c5.text_input(
+                "ORION GRN", value=g_data.get("orion_grn", "")
+            )
+            orion_bill_reg = c6.text_input(
+                "ORION BILL REG", value=g_data.get("orion_bill_reg", "")
+            )
+            orion_inv_no = c7.text_input(
+                "ORION INVOICE No.", value=g_data.get("orion_inv_no", "")
+            )
+            inv_no = c8.text_input(
+                "Invoice No.", value=g_data.get("inv_no", "")
+            )
+
+            c9, c10, c11 = st.columns(3)
+            off_curr = c9.selectbox(
+                "Currency", ["USD", "EUR", "SDG", "AED"], key="off1_curr"
+            )
+            unit_price_tp = c10.number_input(
+                "Unit Price (at TP Screen)",
+                value=float(g_data.get("unit_price_tp", 0.0)),
+            )
+            tot_val = c11.number_input(
+                "Total Value", value=float(g_data.get("tot_val", 0.0))
+            )
+
+            inv_val_usd = tot_val * FX_RATES.get(off_curr, 1.0)
+            st.metric("Invoice Value ($ Calculated)", f"${inv_val_usd:,.2f}")
+
+            group_save_button("offshore_1_related", {
+                "offshore_name": off1_name,
+                "pr_no": pr_no,
+                "orion_po_no": orion_po_no,
+                "orion_sa": orion_sa,
+                "orion_grn": orion_grn,
+                "orion_bill_reg": orion_bill_reg,
+                "orion_inv_no": orion_inv_no,
+                "inv_no": inv_no,
+                "off_curr": off_curr,
+                "unit_price_tp": unit_price_tp,
+                "tot_val": tot_val,
+                "inv_val_usd": inv_val_usd,
+            })
+
+        # ----------------------------------------------------------------------
+        # 11. OFFSHORE-2 RELATED (if applicable)
+        # ----------------------------------------------------------------------
+        if len(offshore_list) >= 2:
+            off2_name = offshore_list[1]
+            with st.expander(f"🌐 11. {off2_name} Related", expanded=False):
+                g_data = load_group_data(shipment_id, "offshore_2_related")
+                c1, c2, c3 = st.columns(3)
+                c1.text_input("Off Shore Name", value=off2_name, disabled=True)
+                insp_no = c2.text_input(
+                    "INSPECTION NO.", value=g_data.get("insp_no", "")
+                )
+                grn_no = c3.text_input(
+                    "GRN NO.", value=g_data.get("grn_no", "")
+                )
+
+                c4, c5 = st.columns(2)
+                orion_inv_no2 = c4.text_input(
+                    "ORION INVOICE No.",
+                    value=g_data.get("orion_inv_no2", ""),
+                    key="orion_inv2",
+                )
+                erp_remarks = c5.text_input(
+                    "ERP REMARKS", value=g_data.get("erp_remarks", "")
+                )
+
+                group_save_button("offshore_2_related", {
+                    "offshore_name": off2_name,
+                    "insp_no": insp_no,
+                    "grn_no": grn_no,
+                    "orion_inv_no2": orion_inv_no2,
+                    "erp_remarks": erp_remarks,
+                })
+
+        # ----------------------------------------------------------------------
+        # 12. OFFSHORE-3 RELATED (if applicable)
+        # ----------------------------------------------------------------------
+        if len(offshore_list) >= 3:
+            off3_name = offshore_list[2]
+            with st.expander(f"🌐 12. {off3_name} Related", expanded=False):
+                g_data = load_group_data(shipment_id, "offshore_3_related")
+                c1, c2, c3 = st.columns(3)
+                c1.text_input("Off Shore Name", value=off3_name, disabled=True)
+                insp_no3 = c2.text_input(
+                    "INSPECTION NO.",
+                    value=g_data.get("insp_no3", ""),
+                    key="insp3",
+                )
+                grn_no3 = c3.text_input(
+                    "GRN NO.", value=g_data.get("grn_no3", ""), key="grn3"
+                )
+
+                c4, c5 = st.columns(2)
+                orion_inv_no3 = c4.text_input(
+                    "ORION INVOICE No.",
+                    value=g_data.get("orion_inv_no3", ""),
+                    key="orion_inv3",
+                )
+                erp_remarks3 = c5.text_input(
+                    "ERP REMARKS",
+                    value=g_data.get("erp_remarks3", ""),
+                    key="erp3",
+                )
+
+                group_save_button("offshore_3_related", {
+                    "offshore_name": off3_name,
+                    "insp_no3": insp_no3,
+                    "grn_no3": grn_no3,
+                    "orion_inv_no3": orion_inv_no3,
+                    "erp_remarks3": erp_remarks3,
+                })
+
+        # ----------------------------------------------------------------------
+        # 13. Treasury Group
+        # ----------------------------------------------------------------------
+        with st.expander("🏛️ 13. Treasury Group", expanded=False):
+            g_data = load_group_data(shipment_id, "treasury")
+            c1, c2, c3 = st.columns(3)
+            nec_good = c1.selectbox(
+                "Necessary Good Type",
+                ["Yes", "No"],
+                index=0 if g_data.get("nec_good") == "Yes" else 1,
+            )
+            sender_bank = c2.selectbox(
+                "Sender Bank",
+                BANK_LIST,
+                index=BANK_LIST.index(
+                    g_data.get("sender_bank", BANK_LIST[0])
+                )
+                if g_data.get("sender_bank") in BANK_LIST
+                else 0,
+            )
+            rec_bank = c3.selectbox(
+                "Receiving Bank",
+                BANK_LIST,
+                key="tr_rec_bank",
+                index=BANK_LIST.index(
+                    g_data.get("rec_bank", BANK_LIST[1])
+                )
+                if g_data.get("rec_bank") in BANK_LIST
+                else 1,
+            )
+
+            c4, c5, c6 = st.columns(3)
+            coll_ref = c4.text_input(
+                "Collection Ref. No", value=g_data.get("coll_ref", "")
+            )
+            coll_val = c5.number_input(
+                "Collection Value", value=float(g_data.get("coll_val", 0.0))
+            )
+            coll_curr = c6.selectbox(
+                "Collection Currency",
+                ["USD", "EUR", "SDG", "AED"],
+                key="tr_curr",
+            )
+
+            c7, c8, c9 = st.columns(3)
+            tenor = c7.selectbox(
+                "Tenor",
+                TENOR_LIST,
+                index=TENOR_LIST.index(g_data.get("tenor", TENOR_LIST[0]))
+                if g_data.get("tenor") in TENOR_LIST
+                else 0,
+            )
+            tr_due_date = c8.date_input(
+                "DUE DATE",
+                value=pd.to_datetime(g_data.get("tr_due_date")).date()
+                if g_data.get("tr_due_date")
+                else date.today(),
+            )
+            amt_settled = c9.number_input(
+                "Amount Settled", value=float(g_data.get("amt_settled", 0.0))
+            )
+
+            rem_dues = coll_val - amt_settled
+            c10, c11, c12 = st.columns(3)
+            c10.metric("Remaining Dues", f"{rem_dues:,.2f} {coll_curr}")
+            im_no = c11.text_input(
+                "IM Form No.", value=g_data.get("im_no", "")
+            )
+            im_date = c12.date_input(
+                "IM Form Date",
+                value=pd.to_datetime(g_data.get("im_date")).date()
+                if g_data.get("im_date")
+                else date.today(),
+            )
+
+            s_bank_chg = coll_val * 0.005
+            r_bank_chg = coll_val * 0.0025
+            st.caption(
+                f"Calculated Bank Charges — Sender: **${s_bank_chg:,.2f}** |"
+                f" Receiver: **${r_bank_chg:,.2f}**"
+            )
+
+            group_save_button("treasury", {
+                "nec_good": nec_good,
+                "sender_bank": sender_bank,
+                "rec_bank": rec_bank,
+                "coll_ref": coll_ref,
+                "coll_val": coll_val,
+                "coll_curr": coll_curr,
+                "tenor": tenor,
+                "tr_due_date": tr_due_date.isoformat(),
+                "amt_settled": amt_settled,
+                "rem_dues": rem_dues,
+                "im_no": im_no,
+                "im_date": im_date.isoformat(),
+                "s_bank_chg": s_bank_chg,
+                "r_bank_chg": r_bank_chg,
+            })
 
 
 # ==============================================================================
-# MODULE 3: CLEARANCE TASK ENGINE
+# MODULE 4: OFFSHORE VALUATION & PROFITABILITY BREAKDOWN
+# ==============================================================================
+elif choice == "📈 Offshore Valuation & Profitability":
+    st.title("📈 Offshore Item Pricing & Multi-Tier Profitability Engine")
+
+    conn = get_db_connection()
+    shipments_df = pd.read_sql_query(
+        "SELECT s.shipment_id, s.bl_awb, s.po_number, m.offshore_companies_json FROM shipments s JOIN master_orders m ON s.po_number = m.po_number",
+        conn,
+    )
+
+    if shipments_df.empty:
+        st.warning("No shipments available for valuation.")
+    else:
+        selected_bl = st.selectbox(
+            "Select BL/AWB to Inspect Items & Multi-Tier Offshore Valuation *",
+            shipments_df["bl_awb"].tolist(),
+        )
+
+        shp_row = shipments_df[shipments_df["bl_awb"] == selected_bl].iloc[0]
+        shipment_id = int(shp_row["shipment_id"])
+
+        raw_offshores = shp_row["offshore_companies_json"]
+        offshore_list = (
+            json.loads(raw_offshores)
+            if raw_offshores
+            else ["Primary Offshore"]
+        )
+        if not offshore_list:
+            offshore_list = ["Primary Offshore"]
+
+        items_df = pd.read_sql_query(
+            "SELECT shipment_item_id, category, model_product, type, qty_shipped, unit_price, total_shipped_value, offshore_pricing_json FROM shipment_line_items WHERE shipment_id = ?",
+            conn,
+            params=(shipment_id,),
+        )
+
+        if items_df.empty:
+            st.info("No items found for this shipment.")
+        else:
+            st.markdown("##### 🛒 Item Pricing & Profitability Table")
+            st.caption(
+                "Enter Offshore Unit Prices ($) for each configured offshore"
+                " company to calculate totals and tiered profit percentages."
+            )
+
+            updated_rows = []
+            for idx, row in items_df.iterrows():
+                st.markdown(
+                    f"**Item #{idx+1}: {row['model_product']}**"
+                    f" ({row['category']} - {row['type']})"
+                )
+
+                qty = float(row["qty_shipped"])
+                supp_unit_price = float(row["unit_price"])
+                supp_total = qty * supp_unit_price
+
+                # Assumptions: FX Rate to USD = 1.0 (or converted if SDG/EUR)
+                supp_unit_usd = supp_unit_price * FX_RATES["USD"]
+                supp_total_usd = supp_total * FX_RATES["USD"]
+
+                raw_pricing_json = row["offshore_pricing_json"]
+                existing_prices = (
+                    json.loads(raw_pricing_json) if raw_pricing_json else {}
+                )
+
+                col_meta1, col_meta2, col_meta3, col_meta4 = st.columns(4)
+                col_meta1.metric("Qty Shipped", f"{qty:,.0f}")
+                col_meta2.metric("Supplier Price ($)", f"${supp_unit_usd:,.2f}")
+                col_meta3.metric("Supplier Total ($)", f"${supp_total_usd:,.2f}")
+
+                offshore_prices = {}
+                cols = st.columns(len(offshore_list))
+
+                prev_price = supp_unit_usd
+                for off_idx, off_name in enumerate(offshore_list):
+                    with cols[off_idx]:
+                        default_val = float(
+                            existing_prices.get(
+                                str(off_idx), supp_unit_usd * 1.10
+                            )
+                        )
+                        u_price_off = st.number_input(
+                            f"{off_name} Unit Price ($)",
+                            value=default_val,
+                            key=f"off_price_{row['shipment_item_id']}_{off_idx}",
+                        )
+                        tot_off = qty * u_price_off
+
+                        profit_pct = (
+                            ((u_price_off - prev_price) / prev_price * 100)
+                            if prev_price > 0
+                            else 0.0
+                        )
+                        st.write(f"**Total $:** ${tot_off:,.2f}")
+                        st.write(f"**Profit %:** {profit_pct:+.2f}%")
+
+                        offshore_prices[str(off_idx)] = u_price_off
+                        prev_price = u_price_off
+
+                updated_rows.append((
+                    json.dumps(offshore_prices),
+                    row["shipment_item_id"],
+                ))
+                st.markdown("---")
+
+            if st.button(
+                "💾 Save All Offshore Pricing & Valuation", type="primary"
+            ):
+                cursor = conn.cursor()
+                for prices_json, shp_item_id in updated_rows:
+                    cursor.execute(
+                        "UPDATE shipment_line_items SET offshore_pricing_json"
+                        " = ? WHERE shipment_item_id = ?",
+                        (prices_json, shp_item_id),
+                    )
+                conn.commit()
+                st.success("Updated offshore pricing & profitability metrics!")
+                st.rerun()
+
+    conn.close()
+
+
+# ==============================================================================
+# MODULE 5: TREASURY OPERATIONS
+# ==============================================================================
+elif choice == "🏦 Treasury Operations":
+    st.title("🏦 Standalone Treasury Operations Module")
+
+    conn = get_db_connection()
+    shipments_df = pd.read_sql_query(
+        "SELECT s.shipment_id, s.bl_awb, s.po_number, m.supplier_name FROM shipments s JOIN master_orders m ON s.po_number = m.po_number",
+        conn,
+    )
+
+    if shipments_df.empty:
+        st.warning("No active shipments found.")
+    else:
+        selected_bl = st.selectbox(
+            "Select Active Shipment / BL Number for Treasury Operations:",
+            shipments_df["bl_awb"].tolist(),
+        )
+
+        shp_row = shipments_df[shipments_df["bl_awb"] == selected_bl].iloc[0]
+        shipment_id = int(shp_row["shipment_id"])
+
+        g_data = load_group_data(shipment_id, "treasury")
+
+        st.subheader(
+            f"🏦 Treasury Details for Shipment `{selected_bl}` ({shp_row['supplier_name']})"
+        )
+
+        c1, c2, c3 = st.columns(3)
+        nec_good = c1.selectbox(
+            "Necessary Good Type *",
+            ["Yes", "No"],
+            index=0 if g_data.get("nec_good") == "Yes" else 1,
+        )
+        sender_bank = c2.selectbox(
+            "Sender Bank *",
+            BANK_LIST,
+            index=BANK_LIST.index(g_data.get("sender_bank", BANK_LIST[0]))
+            if g_data.get("sender_bank") in BANK_LIST
+            else 0,
+        )
+        rec_bank = c3.selectbox(
+            "Receiving Bank *",
+            BANK_LIST,
+            index=BANK_LIST.index(g_data.get("rec_bank", BANK_LIST[1]))
+            if g_data.get("rec_bank") in BANK_LIST
+            else 1,
+        )
+
+        c4, c5, c6 = st.columns(3)
+        coll_ref = c4.text_input(
+            "Collection Ref. No", value=g_data.get("coll_ref", "COL-2026-8801")
+        )
+        coll_val = c5.number_input(
+            "Collection Value", value=float(g_data.get("coll_val", 250000.0))
+        )
+        coll_curr = c6.selectbox(
+            "Collection Currency",
+            ["USD", "EUR", "SDG", "AED"],
+            index=0,
+        )
+
+        c7, c8, c9 = st.columns(3)
+        tenor = c7.selectbox(
+            "Tenor",
+            TENOR_LIST,
+            index=TENOR_LIST.index(g_data.get("tenor", "90 Days"))
+            if g_data.get("tenor") in TENOR_LIST
+            else 3,
+        )
+        tr_due_date = c8.date_input(
+            "DUE DATE",
+            value=pd.to_datetime(g_data.get("tr_due_date")).date()
+            if g_data.get("tr_due_date")
+            else date.today() + timedelta(days=90),
+        )
+        amt_settled = c9.number_input(
+            "Amount Settled", value=float(g_data.get("amt_settled", 50000.0))
+        )
+
+        rem_dues = coll_val - amt_settled
+        st.markdown("---")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Collection Value", f"{coll_val:,.2f} {coll_curr}")
+        m2.metric("Amount Settled", f"{amt_settled:,.2f} {coll_curr}")
+        m3.metric("Remaining Dues (Calculated)", f"{rem_dues:,.2f} {coll_curr}")
+
+        st.markdown("---")
+        c10, c11 = st.columns(2)
+        im_no = c10.text_input(
+            "IM Form No.", value=g_data.get("im_no", "IM-2026-9912")
+        )
+        im_date = c11.date_input(
+            "IM Form Date",
+            value=pd.to_datetime(g_data.get("im_date")).date()
+            if g_data.get("im_date")
+            else date.today(),
+        )
+
+        s_bank_chg = coll_val * 0.005
+        r_bank_chg = coll_val * 0.0025
+        st.info(
+            f"Estimated Sender Bank Charges: **${s_bank_chg:,.2f}** | Estimated"
+            f" Receiver Bank Charges: **${r_bank_chg:,.2f}**"
+        )
+
+        if st.button("💾 Save Treasury Record", type="primary"):
+            save_group_data(shipment_id, "treasury", {
+                "nec_good": nec_good,
+                "sender_bank": sender_bank,
+                "rec_bank": rec_bank,
+                "coll_ref": coll_ref,
+                "coll_val": coll_val,
+                "coll_curr": coll_curr,
+                "tenor": tenor,
+                "tr_due_date": tr_due_date.isoformat(),
+                "amt_settled": amt_settled,
+                "rem_dues": rem_dues,
+                "im_no": im_no,
+                "im_date": im_date.isoformat(),
+                "s_bank_chg": s_bank_chg,
+                "r_bank_chg": r_bank_chg,
+            })
+            st.success("Treasury record saved successfully!")
+            st.rerun()
+
+    conn.close()
+
+
+# ==============================================================================
+# MODULE 6: CLEARANCE TASK ENGINE
 # ==============================================================================
 elif choice == "📋 Clearance Task Engine":
     st.title("📋 Clearance Task Workflow Engine")
@@ -1218,7 +2105,6 @@ elif choice == "📋 Clearance Task Engine":
 
             updated_data = {}
 
-            # 1. General Info Process
             if key == "gen_info":
                 col1, col2 = st.columns(2)
                 bl_rec = col1.date_input(
@@ -1261,7 +2147,6 @@ elif choice == "📋 Clearance Task Engine":
                 )
 
                 st.markdown("---")
-                st.markdown("**5. Clearance Completion Estimate Date:**")
                 col_est1, col_est2 = st.columns(2)
 
                 override_key = f"manual_override_cb_{shipment_id}"
@@ -1297,7 +2182,7 @@ elif choice == "📋 Clearance Task Engine":
                     else calculated_completion_est
                 )
                 notes = st.text_area(
-                    "6. General Notes",
+                    "5. General Notes",
                     value=shipment_data.get("notes", ""),
                     key=f"notes_{shipment_id}",
                 )
@@ -1311,7 +2196,6 @@ elif choice == "📋 Clearance Task Engine":
                     else None,
                 }
 
-            # 2. Track Selection
             elif key == "clear_at_select":
                 track_choice = st.selectbox(
                     "Select Clearance Destination Track:",
@@ -1321,110 +2205,6 @@ elif choice == "📋 Clearance Task Engine":
                 )
                 updated_data = {"clear_at": track_choice}
 
-            # 3. Cost Estimate
-            elif key == "cost_estimate":
-                c1, c2 = st.columns(2)
-                est_d = c1.date_input(
-                    "1. Estimate Date",
-                    value=pd.to_datetime(task_data.get("est_date")).date()
-                    if task_data.get("est_date")
-                    else None,
-                    key=f"est_d_{shipment_id}",
-                )
-                val_raw = c2.text_input(
-                    "2. Estimated Value (SDG)",
-                    value=format_amount(task_data.get("value", 500000.0)),
-                    key=f"cost_val_{shipment_id}",
-                )
-                val = parse_amount(val_raw)
-
-                c3, c4 = st.columns(2)
-                not_bu = c3.date_input(
-                    "3. Notify BU Date",
-                    value=pd.to_datetime(
-                        task_data.get("notify_bu_date")
-                    ).date()
-                    if task_data.get("notify_bu_date")
-                    else None,
-                    key=f"not_bu_{shipment_id}",
-                )
-                amt_rec_d = c4.date_input(
-                    "4. Amount Received Date",
-                    value=pd.to_datetime(
-                        task_data.get("amount_received_date")
-                    ).date()
-                    if task_data.get("amount_received_date")
-                    else None,
-                    key=f"amt_rec_{shipment_id}",
-                )
-
-                updated_data = {
-                    "est_date": est_d.isoformat() if est_d else None,
-                    "value": val,
-                    "notify_bu_date": not_bu.isoformat() if not_bu else None,
-                    "amount_received_date": amt_rec_d.isoformat()
-                    if amt_rec_d
-                    else None,
-                }
-
-            # 4. Delivery Order
-            elif key == "delivery_order":
-                c1, c2 = st.columns(2)
-                copy_do = c1.checkbox(
-                    "1. Copy of DO Collected",
-                    value=bool(task_data.get("copy_do")),
-                    key=f"copy_do_{shipment_id}",
-                )
-                do_fees_raw = c2.text_input(
-                    "2. DO Fees (SDG)",
-                    value=format_amount(task_data.get("do_fees", 150000.0)),
-                    key=f"do_fees_{shipment_id}",
-                )
-                do_fees = parse_amount(do_fees_raw)
-
-                c3, c4 = st.columns(2)
-                settle_d = c3.date_input(
-                    "3. DO Fees Settled Date",
-                    value=pd.to_datetime(task_data.get("settled_date")).date()
-                    if task_data.get("settled_date")
-                    else None,
-                    key=f"do_settle_{shipment_id}",
-                )
-                rec_d = c4.date_input(
-                    "4. DO Received Date",
-                    value=pd.to_datetime(task_data.get("received_date")).date()
-                    if task_data.get("received_date")
-                    else None,
-                    key=f"do_rec_{shipment_id}",
-                )
-                updated_data = {
-                    "copy_do": copy_do,
-                    "do_fees": do_fees,
-                    "settled_date": settle_d.isoformat() if settle_d else None,
-                    "received_date": rec_d.isoformat() if rec_d else None,
-                }
-
-            # 5. Customs Certificate
-            elif key == "customs_cert":
-                c1, c2 = st.columns(2)
-                entry_d = c1.date_input(
-                    "1. Entry Date",
-                    value=pd.to_datetime(task_data.get("entry_date")).date()
-                    if task_data.get("entry_date")
-                    else None,
-                    key=f"cert_entry_{shipment_id}",
-                )
-                scuda_no = c2.text_input(
-                    "2. SCUDA Declaration No.",
-                    value=task_data.get("scuda_no", "SCUDA-99182"),
-                    key=f"scuda_{shipment_id}",
-                )
-                updated_data = {
-                    "entry_date": entry_d.isoformat() if entry_d else None,
-                    "scuda_no": scuda_no,
-                }
-
-            # Generic Step
             else:
                 st.caption("Standard task status recording")
 
@@ -1493,7 +2273,7 @@ elif choice == "📋 Clearance Task Engine":
 
 
 # ==============================================================================
-# MODULE 4: ANALYTICS & TARGET SLA CONFIGURATION
+# MODULE 7 & 8: ANALYTICS & TARGET SLA CONFIGURATION
 # ==============================================================================
 elif choice == "📊 Clearance & SLA Analytics":
     st.title("📊 Clearance SLA & Bottleneck Analytics")
@@ -1523,7 +2303,6 @@ elif choice == "📊 Clearance & SLA Analytics":
         )
 
         st.markdown("---")
-        st.markdown("### ⏳ Target SLA Summary by Process Step")
         sla_summary = (
             df_tasks.groupby(["track", "process_name"])
             .agg(
