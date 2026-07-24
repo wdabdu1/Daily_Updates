@@ -71,41 +71,14 @@ def init_db():
             bu_est_shipping_cost REAL,
             mode_of_shipment TEXT,
             currency TEXT DEFAULT 'USD',
-            total_po_value REAL,
+            total_po_value REAL DEFAULT 0.0,
             port_of_loading TEXT,
             order_date DATE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # --- DB MIGRATIONS FOR MASTER ORDERS ---
-    cursor.execute("PRAGMA table_info(master_orders)")
-    existing_cols = [row[1] for row in cursor.fetchall()]
-    new_cols = {
-        "division": "TEXT",
-        "brand_manufacturer": "TEXT",
-        "approval_type": "TEXT",
-        "consignee": "TEXT",
-        "supplier_pi_no": "TEXT",
-        "supplier_pi_date": "DATE",
-        "rec_signed_pi_date": "DATE",
-        "sent_signed_pi_date": "DATE",
-        "bu_po_date": "DATE",
-        "order_execution_date": "DATE",
-        "latest_shipment_date": "DATE",
-        "offshore_companies_json": "TEXT",
-        "offshore_po_no": "TEXT",
-        "offshore_po_date": "DATE",
-        "bu_est_shipping_cost": "REAL",
-        "mode_of_shipment": "TEXT",
-    }
-    for col_name, col_type in new_cols.items():
-        if col_name not in existing_cols:
-            cursor.execute(
-                f"ALTER TABLE master_orders ADD COLUMN {col_name} {col_type}"
-            )
-
-    # 2. PO Line Items Table (Enhanced with Category, Model/Product, Type, etc.)
+    # 2. PO Line Items Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS po_line_items (
             item_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,7 +98,7 @@ def init_db():
         )
     """)
 
-    # 3. Shipments Table (Enhanced with Supplier Invoice Details)
+    # 3. Shipments Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shipments (
             shipment_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -344,6 +317,22 @@ def seed_tasks_for_shipment(cursor, shipment_id):
         )
 
 
+def update_master_order_total(conn, po_number):
+    """Recalculates total_po_value in master_orders based on line items."""
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT SUM(total_value) FROM po_line_items WHERE po_number = ?",
+        (po_number,),
+    )
+    res = cursor.fetchone()[0]
+    total_val = float(res) if res is not None else 0.0
+    cursor.execute(
+        "UPDATE master_orders SET total_po_value = ? WHERE po_number = ?",
+        (total_val, po_number),
+    )
+    conn.commit()
+
+
 init_db()
 
 
@@ -499,12 +488,12 @@ if choice == "📦 Master Orders & Line Items":
     st.title("📦 Master Purchase Order & Line Item Management")
 
     tab1, tab2 = st.tabs(
-        ["1️⃣ Create Master Order & Line Items", "2️⃣ Master Order Registry"]
+        ["1️⃣ Create / Manage PO & Line Items", "2️⃣ Master Order Registry"]
     )
 
-    # --- TAB 1: CREATE MASTER ORDER ---
+    # --- TAB 1: CREATE MASTER ORDER & LINE ITEMS ---
     with tab1:
-        st.subheader("📌 Main Master Order Specifications")
+        st.subheader("1️⃣ Create Master Order Header")
 
         # --- SECTION 1: HEADER IDENTIFICATION & ENTITIES ---
         st.markdown("##### 🏢 Order Identity & Business Entities")
@@ -628,121 +617,14 @@ if choice == "📦 Master Orders & Line Items":
         latest_shipment_date = d5.date_input("Latest Shipment Date", value=date.today() + timedelta(days=60))
 
         st.markdown("---")
-        st.subheader("🛒 PO Line Items Entry")
-        st.caption(
-            "Itemized Breakdown: Category, Model/Product, Type, Ordered Qty,"
-            " Unit Price & Auto-Calculated Value"
-        )
-
-        if "temp_line_items" not in st.session_state:
-            st.session_state["temp_line_items"] = []
-
-        with st.expander("➕ Add Line Item to Master Order", expanded=True):
-            li_c1, li_c2, li_c3 = st.columns(3)
-            category = li_c1.selectbox(
-                "Category *",
-                ["Machinery", "Spare Parts", "Electronics", "Raw Materials", "Vehicles", "Chemicals"],
-            )
-            model_product = li_c2.text_input(
-                "Model / Product *", placeholder="e.g. CAT 500KW Generator"
-            )
-            item_type = li_c3.selectbox(
-                "Type *",
-                ["Heavy Duty", "Standard", "OEM Replacement", "Industrial", "Consumable"],
-            )
-
-            li_c4, li_c5, li_c6, li_c7 = st.columns(4)
-            ordered_qty = li_c4.number_input(
-                "Ordered Qty *", min_value=1.0, value=1.0
-            )
-            u_price_raw = li_c5.text_input("Unit Price *", value="1,000.00")
-            unit_price = parse_amount(u_price_raw)
-            item_currency = li_c6.selectbox(
-                "Currency", ["USD", "EUR", "SDG", "AED"], index=0
-            )
-            ssmo_req = li_c7.checkbox("SSMO Inspection Req.?", value=True)
-
-            li_c8, li_c9 = st.columns(2)
-            hs_code = li_c8.text_input("HS Code", placeholder="8502.13.00")
-            item_code = li_c9.text_input(
-                "Item Code / Part No.", placeholder="GEN-500KW"
-            )
-
-            total_value = ordered_qty * unit_price
-            st.info(
-                f"Calculated Item Total Value: **{item_currency}"
-                f" {format_amount(total_value)}**"
-            )
-
-            if st.button("➕ Add Item to Order"):
-                if not model_product.strip():
-                    st.error("Model / Product Name is required.")
-                else:
-                    st.session_state["temp_line_items"].append({
-                        "category": category,
-                        "model_product": model_product.strip(),
-                        "type": item_type,
-                        "ordered_qty": ordered_qty,
-                        "unit_price": unit_price,
-                        "total_value": total_value,
-                        "currency": item_currency,
-                        "item_code": item_code.strip(),
-                        "item_description": f"{model_product.strip()} ({item_type})",
-                        "hs_code": hs_code.strip(),
-                        "ssmo_required": 1 if ssmo_req else 0,
-                    })
-                    st.success(
-                        f"Added '{model_product}' to draft PO line items!"
-                    )
-                    st.rerun()
-
-        if st.session_state["temp_line_items"]:
-            st.markdown("##### Current Draft Line Items:")
-            df_temp = pd.DataFrame(st.session_state["temp_line_items"])
-            df_temp["formatted_unit_price"] = df_temp["unit_price"].apply(
-                format_amount
-            )
-            df_temp["formatted_total"] = df_temp["total_value"].apply(
-                format_amount
-            )
-
-            st.dataframe(
-                df_temp[[
-                    "category",
-                    "model_product",
-                    "type",
-                    "ordered_qty",
-                    "formatted_unit_price",
-                    "formatted_total",
-                    "currency",
-                    "hs_code",
-                    "ssmo_required",
-                ]],
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            line_item_sum = sum(
-                item["total_value"]
-                for item in st.session_state["temp_line_items"]
-            )
-            st.write(
-                "**Total Calculated Order Value:**"
-                f" `{currency_master} {format_amount(line_item_sum)}`"
-            )
-
-            if st.button("🗑️ Clear Draft Items"):
-                st.session_state["temp_line_items"] = []
-                st.rerun()
-
-        st.markdown("---")
+        # --- SAVE MASTER ORDER HEADER BUTTON ---
         if st.button(
-            "💾 Save Master Order with All Metadata",
+            "💾 Save Master Order Header",
             use_container_width=True,
             type="primary",
         ):
             if not po_number.strip() or not supplier_name.strip():
-                st.error("PO Number and Supplier Name are required.")
+                st.error("PO Number and Supplier Name are required fields.")
             else:
                 conn = get_db_connection()
                 try:
@@ -752,11 +634,6 @@ if choice == "📦 Master Orders & Line Items":
                     ]
                     offshore_json_str = json.dumps(cleaned_offshore_list)
 
-                    calculated_total_po_val = sum(
-                        item["total_value"]
-                        for item in st.session_state["temp_line_items"]
-                    )
-
                     cursor.execute(
                         """
                         INSERT INTO master_orders 
@@ -764,7 +641,7 @@ if choice == "📦 Master Orders & Line Items":
                          supplier_pi_no, supplier_pi_date, payment_terms, rec_signed_pi_date, sent_signed_pi_date, bu_po_date,
                          order_execution_date, latest_shipment_date, incoterm, country_of_origin, offshore_companies_json,
                          offshore_po_no, offshore_po_date, bu_est_shipping_cost, mode_of_shipment, currency, total_po_value, port_of_loading, order_date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?)
                     """,
                         (
                             po_number.strip(),
@@ -790,13 +667,119 @@ if choice == "📦 Master Orders & Line Items":
                             bu_est_shipping_cost,
                             mode_of_shipment,
                             currency_master,
-                            calculated_total_po_val,
                             port_of_loading.strip(),
                             bu_po_date.isoformat(),
                         ),
                     )
+                    conn.commit()
+                    st.session_state["active_po_for_items"] = po_number.strip()
+                    st.success(
+                        f"Master Order Header **{po_number.strip()}** saved"
+                        " successfully! You can now add Line Items below."
+                    )
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error(f"PO Number '{po_number.strip()}' already exists in the system.")
+                finally:
+                    conn.close()
 
-                    for item in st.session_state["temp_line_items"]:
+        st.markdown("---")
+        # ==============================================================================
+        # SECTION 2: PO LINE ITEMS ENTRY (LOCKED UNTIL MASTER IS SAVED OR SELECTED)
+        # ==============================================================================
+        st.subheader("2️⃣ PO Line Items Entry")
+
+        conn = get_db_connection()
+        all_master_pos = pd.read_sql_query(
+            "SELECT po_number, supplier_name, bu_id, currency, total_po_value FROM master_orders ORDER BY created_at DESC",
+            conn,
+        )
+
+        if all_master_pos.empty:
+            st.warning(
+                "🔒 **PO Line Items Entry is locked.** Please fill out and save a"
+                " Master Order Header above to enable line item additions."
+            )
+        else:
+            po_list = all_master_pos["po_number"].tolist()
+            
+            # Auto-select the newly created PO if available in session state
+            default_index = 0
+            if (
+                "active_po_for_items" in st.session_state
+                and st.session_state["active_po_for_items"] in po_list
+            ):
+                default_index = po_list.index(st.session_state["active_po_for_items"])
+
+            selected_open_po = st.selectbox(
+                "Select Open Master Order (PO) to Add or View Line Items *",
+                po_list,
+                index=default_index,
+                format_func=lambda x: f"{x} — {all_master_pos[all_master_pos['po_number'] == x]['supplier_name'].values[0]} ({all_master_pos[all_master_pos['po_number'] == x]['bu_id'].values[0]})",
+            )
+
+            # Display currently saved items for the selected PO
+            current_items_df = pd.read_sql_query(
+                "SELECT item_id, category, model_product, type, ordered_qty, unit_price, total_value, currency, hs_code, ssmo_required FROM po_line_items WHERE po_number = ?",
+                conn,
+                params=(selected_open_po,),
+            )
+
+            po_meta = all_master_pos[all_master_pos["po_number"] == selected_open_po].iloc[0]
+            
+            st.markdown(f"##### Current Saved Line Items for `{selected_open_po}`:")
+            if not current_items_df.empty:
+                disp_df = current_items_df.copy()
+                disp_df["unit_price"] = disp_df["unit_price"].apply(format_amount)
+                disp_df["total_value"] = disp_df["total_value"].apply(format_amount)
+                st.dataframe(disp_df, use_container_width=True, hide_index=True)
+                st.info(
+                    f"Current Master Order Total Value: **{po_meta['currency']} {format_amount(po_meta['total_po_value'])}**"
+                )
+            else:
+                st.info("No line items added yet for this PO.")
+
+            with st.expander("➕ Add New Line Item to Selected PO", expanded=True):
+                li_c1, li_c2, li_c3 = st.columns(3)
+                category = li_c1.selectbox(
+                    "Category *",
+                    ["Machinery", "Spare Parts", "Electronics", "Raw Materials", "Vehicles", "Chemicals"],
+                )
+                model_product = li_c2.text_input(
+                    "Model / Product *", placeholder="e.g. CAT 500KW Generator"
+                )
+                item_type = li_c3.selectbox(
+                    "Type *",
+                    ["Heavy Duty", "Standard", "OEM Replacement", "Industrial", "Consumable"],
+                )
+
+                li_c4, li_c5, li_c6, li_c7 = st.columns(4)
+                ordered_qty = li_c4.number_input(
+                    "Ordered Qty *", min_value=1.0, value=1.0
+                )
+                u_price_raw = li_c5.text_input("Unit Price *", value="1,000.00")
+                unit_price = parse_amount(u_price_raw)
+                item_currency = li_c6.selectbox(
+                    "Currency", ["USD", "EUR", "SDG", "AED"], index=0
+                )
+                ssmo_req = li_c7.checkbox("SSMO Inspection Req.?", value=True)
+
+                li_c8, li_c9 = st.columns(2)
+                hs_code = li_c8.text_input("HS Code", placeholder="8502.13.00")
+                item_code = li_c9.text_input(
+                    "Item Code / Part No.", placeholder="GEN-500KW"
+                )
+
+                total_value = ordered_qty * unit_price
+                st.caption(
+                    f"Calculated Item Value: **{item_currency} {format_amount(total_value)}**"
+                )
+
+                if st.button("➕ Save Item to Master Order"):
+                    if not model_product.strip():
+                        st.error("Model / Product Name is required.")
+                    else:
+                        cursor = conn.cursor()
                         cursor.execute(
                             """
                             INSERT INTO po_line_items 
@@ -804,34 +787,28 @@ if choice == "📦 Master Orders & Line Items":
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                             (
-                                po_number.strip(),
-                                item["category"],
-                                item["model_product"],
-                                item["type"],
-                                item["ordered_qty"],
-                                item["unit_price"],
-                                item["total_value"],
-                                item["currency"],
-                                item["item_code"],
-                                item["item_description"],
-                                item["hs_code"],
-                                item["ssmo_required"],
+                                selected_open_po,
+                                category,
+                                model_product.strip(),
+                                item_type,
+                                ordered_qty,
+                                unit_price,
+                                total_value,
+                                item_currency,
+                                item_code.strip(),
+                                f"{model_product.strip()} ({item_type})",
+                                hs_code.strip(),
+                                1 if ssmo_req else 0,
                             ),
                         )
+                        conn.commit()
+                        update_master_order_total(conn, selected_open_po)
+                        st.success(
+                            f"Line item '{model_product.strip()}' successfully added to **{selected_open_po}**!"
+                        )
+                        st.rerun()
 
-                    conn.commit()
-                    st.success(
-                        f"Master Order **{po_number}** and"
-                        f" {len(st.session_state['temp_line_items'])} Line Items"
-                        " saved successfully!"
-                    )
-                    st.session_state["temp_line_items"] = []
-                    st.session_state["offshore_companies_list"] = [""]
-                    st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error(f"PO Number '{po_number}' already exists.")
-                finally:
-                    conn.close()
+        conn.close()
 
     # --- TAB 2: MASTER ORDER REGISTRY ---
     with tab2:
