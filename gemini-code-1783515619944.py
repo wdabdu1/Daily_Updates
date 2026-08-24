@@ -171,11 +171,11 @@ def init_db():
             -- Seed Default Manager User
             INSERT INTO users (username, password_hash, role)
             VALUES ('admin', :default_pass, 'Manager')
-            ON CONFLICT (username) DO NOTHING;
+            ON CONFLICT (username) DO UPDATE;
             
             INSERT INTO currencies (code) 
             VALUES ('USD'), ('EUR'), ('EGP'), ('GBP'), ('SAR'), ('AED'), ('SDG')
-            ON CONFLICT DO UPDATE;
+            ON CONFLICT DO NOTHING;
         """),
         {"default_pass": hash_password("admin123")},
     )
