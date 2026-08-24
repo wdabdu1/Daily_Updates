@@ -257,99 +257,95 @@ if menu == "Master Settings":
 # DAILY EX RATES
 # ---------------------------------------------------------
 elif menu == "Daily EX Rates":
-    st.title("💱 Foreign Exchange Rate Management")
+  st.title("💱 Foreign Exchange Rate Management")
 
-    today = pd.to_datetime("today").date()
-    all_currencies = get_currencies()
+  today = pd.to_datetime("today").date()
+  all_currencies = get_currencies()
 
-    st.subheader("Log Daily Rate")
+  st.subheader("Log Daily Rate")
 
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 1.5])
-    rate_date = c1.date_input("Date", today)
+  c1, c2, c3, c4 = st.columns([1, 1, 1, 1.5])
+  rate_date = c1.date_input("Date", today)
 
-    # Set default FROM = AED
-    default_from_idx = (
-        all_currencies.index("AED") if "AED" in all_currencies else 0
-    )
-    from_curr = c2.selectbox(
-        "From Currency", all_currencies, index=default_from_idx
-    )
+  # Set default FROM = AED
+  default_from_idx = (
+      all_currencies.index("AED") if "AED" in all_currencies else 0
+  )
+  from_curr = c2.selectbox(
+      "From Currency", all_currencies, index=default_from_idx
+  )
 
-    # List 2 excludes chosen From Currency; Default TO = SDG
-    to_options = [c for c in all_currencies if c != from_curr]
-    default_to_idx = (
-        to_options.index("SDG")
-        if "SDG" in to_options
-        else (0 if to_options else 0)
-    )
-    to_curr = c3.selectbox(
-        "To Currency", to_options, index=default_to_idx
-    )
+  # List 2 excludes chosen From Currency; Default TO = SDG
+  to_options = [c for c in all_currencies if c != from_curr]
+  default_to_idx = (
+      to_options.index("SDG")
+      if "SDG" in to_options
+      else (0 if to_options else 0)
+  )
+  to_curr = c3.selectbox("To Currency", to_options, index=default_to_idx)
 
-    rate_val = c4.number_input(
-        "Rate", value=0.0000, format="%.4f", step=0.0001
-    )
-    full_pair = f"{from_curr}/{to_curr}"
+  rate_val = c4.number_input("Rate", value=0.0000, format="%.4f", step=0.0001)
+  full_pair = f"{from_curr}/{to_curr}"
 
-    if st.button("Record Rate"):
-        if rate_val <= 0:
-            st.error("Please enter a rate value greater than 0.")
-        else:
-            with engine.connect() as conn:
-                conn.execute(
-                    text("""
+  if st.button("Record Rate"):
+    if rate_val <= 0:
+      st.error("Please enter a rate value greater than 0.")
+    else:
+      with engine.connect() as conn:
+        conn.execute(
+            text("""
                     INSERT INTO exchange_rates (rate_date, currency_pair, rate, is_auto_filled)
                     VALUES (:d, :p, :r, FALSE)
                     ON CONFLICT (rate_date, currency_pair) DO UPDATE SET rate = EXCLUDED.rate, is_auto_filled = FALSE
                 """),
-                    {"d": rate_date, "p": full_pair, "r": rate_val},
-                )
-                conn.commit()
-            st.success(
-                f"Recorded: {full_pair} = {rate_val:,.4f} for {rate_date}"
-            )
-
-    st.markdown("---")
-    st.subheader("EX Rate Analytics & Trends")
-
-    existing_pairs_df = pd.read_sql(
-        "SELECT DISTINCT currency_pair FROM exchange_rates", engine
-    )
-    existing_pairs = (
-        existing_pairs_df["currency_pair"].tolist()
-        if not existing_pairs_df.empty
-        else [full_pair]
-    )
-
-    selected_pair = st.selectbox(
-        "Select Currency Pair to View", existing_pairs
-    )
-
-    rates_df = pd.read_sql(
-        "SELECT * FROM exchange_rates WHERE currency_pair = :p ORDER BY rate_date ASC",
-        engine,
-        params={"p": selected_pair},
-    )
-
-    if not rates_df.empty:
-        rates_df["rate_date"] = pd.to_datetime(rates_df["rate_date"])
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Average Rate", f"{rates_df['rate'].mean():,.4f}")
-        m2.metric("Max Rate", f"{rates_df['rate'].max():,.4f}")
-        m3.metric("Min Rate", f"{rates_df['rate'].min():,.4f}")
-        m4.metric("Std Dev", f"{rates_df['rate'].std():,.4f}")
-
-        fig = px.line(
-            rates_df,
-            x="rate_date",
-            y="rate",
-            title=f"{selected_pair} Rate Movement",
-            markers=True,
+            {"d": rate_date, "p": full_pair, "r": rate_val},
         )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info(f"No exchange rate data recorded yet for {selected_pair}.")
+        conn.commit()
+      st.success(f"Recorded: {full_pair} = {rate_val:,.4f} for {rate_date}")
+
+  st.markdown("---")
+  st.subheader("EX Rate Analytics & Trends")
+
+  existing_pairs_df = pd.read_sql(
+      "SELECT DISTINCT currency_pair FROM exchange_rates", engine
+  )
+  existing_pairs = (
+      existing_pairs_df["currency_pair"].tolist()
+      if not existing_pairs_df.empty
+      else [full_pair]
+  )
+
+  selected_pair = st.selectbox("Select Currency Pair to View", existing_pairs)
+
+  # WRAPPED IN text() TO FIX THE PARAMETER SYNTAX ERROR
+  rates_df = pd.read_sql(
+      text(
+          "SELECT * FROM exchange_rates WHERE currency_pair = :p ORDER BY"
+          " rate_date ASC"
+      ),
+      engine,
+      params={"p": selected_pair},
+  )
+
+  if not rates_df.empty:
+    rates_df["rate_date"] = pd.to_datetime(rates_df["rate_date"])
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Average Rate", f"{rates_df['rate'].mean():,.4f}")
+    m2.metric("Max Rate", f"{rates_df['rate'].max():,.4f}")
+    m3.metric("Min Rate", f"{rates_df['rate'].min():,.4f}")
+    m4.metric("Std Dev", f"{rates_df['rate'].std():,.4f}")
+
+    fig = px.line(
+        rates_df,
+        x="rate_date",
+        y="rate",
+        title=f"{selected_pair} Rate Movement",
+        markers=True,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+  else:
+    st.info(f"No exchange rate data recorded yet for {selected_pair}.")
 
 # ---------------------------------------------------------
 # BANK DUES & CASH
