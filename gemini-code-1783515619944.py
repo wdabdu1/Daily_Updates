@@ -81,14 +81,35 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
-    with engine.connect() as conn:
-        conn.execute(text("""
+  with engine.connect() as conn:
+    conn.execute(
+        text("""
+            -- Create users table if it doesn't exist
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(50) UNIQUE NOT NULL,
-                password_hash VARCHAR(64) NOT NULL,
-                role VARCHAR(20) DEFAULT 'Read/Write' -- Manager, Read/Write, Read-Only
+                password_hash VARCHAR(64),
+                role VARCHAR(20) DEFAULT 'Read/Write'
             );
+
+            -- Automatically add password_hash & role columns if an old users table exists
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='users' AND column_name='password_hash'
+                ) THEN 
+                    ALTER TABLE users ADD COLUMN password_hash VARCHAR(64);
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='users' AND column_name='role'
+                ) THEN 
+                    ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'Read/Write';
+                END IF;
+            END $$;
+
             CREATE TABLE IF NOT EXISTS bus (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(100) UNIQUE NOT NULL
@@ -146,15 +167,15 @@ def init_db():
             -- Seed Default Manager User (admin / admin123)
             INSERT INTO users (username, password_hash, role)
             VALUES ('admin', :default_pass, 'Manager')
-            ON CONFLICT DO NOTHING;
+            ON CONFLICT (username) DO NOTHING;
             
             INSERT INTO currencies (code) 
             VALUES ('USD'), ('EUR'), ('EGP'), ('GBP'), ('SAR'), ('AED'), ('SDG')
             ON CONFLICT DO NOTHING;
-        """), {"default_pass": hash_password("admin123")})
-        conn.commit()
-
-init_db()
+        """),
+        {"default_pass": hash_password("admin123")},
+    )
+    conn.commit()
 
 # ---------------------------------------------------------
 # AUTHENTICATION MODULE
