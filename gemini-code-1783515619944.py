@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, text
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Corporate Treasury Portal",
-    page_icon="🛳️",
+    page_icon="🏈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -101,6 +101,7 @@ def init_db():
             );
 
             -- Directly patch missing columns if an old users table exists
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS id SERIAL;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(64);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'Read/Write';
 
@@ -290,7 +291,7 @@ if settings_menu:
           st.rerun()
 
     st.markdown("---")
-    users_df = pd.read_sql("SELECT id, username, role FROM users", engine)
+    users_df = pd.read_sql("SELECT username, role FROM users", engine)
     st.dataframe(users_df, use_container_width=True)
 
   elif settings_menu == "Business Units (BU)":
