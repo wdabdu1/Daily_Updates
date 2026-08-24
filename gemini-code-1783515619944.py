@@ -45,7 +45,7 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS bank_dues (
                 id SERIAL PRIMARY KEY,
-                account_id INT REFERENCES master_accounts(id),
+                account_id INT REFERENCES master_accounts(id) ON DELETE CASCADE,
                 due_date DATE,
                 facility_type VARCHAR(100),
                 amount NUMERIC(15, 2),
@@ -54,14 +54,13 @@ def init_db():
             CREATE TABLE IF NOT EXISTS daily_cash_positions (
                 id SERIAL PRIMARY KEY,
                 position_date DATE,
-                account_id INT REFERENCES master_accounts(id),
+                account_id INT REFERENCES master_accounts(id) ON DELETE CASCADE,
                 cash_balance NUMERIC(15, 2),
                 UNIQUE(position_date, account_id)
             );
             
-            -- Insert default currencies if table is empty
             INSERT INTO currencies (code) 
-            VALUES ('USD'), ('EUR'), ('EGP'), ('GBP'), ('SAR'), ('AED')
+            VALUES ('USD'), ('EUR'), ('EGP'), ('GBP'), ('SAR'), ('AED'), ('SDG')
             ON CONFLICT DO NOTHING;
         """)
         )
@@ -75,7 +74,7 @@ def get_currencies():
     df = pd.read_sql(
         "SELECT code FROM currencies ORDER BY code ASC", engine
     )
-    return df["code"].tolist() if not df.empty else ["USD"]
+    return df["code"].tolist() if not df.empty else ["AED", "SDG", "USD"]
 
 
 # ---------------------------------------------------------
@@ -159,11 +158,100 @@ if menu == "Master Settings":
                 )
                 conn.commit()
             st.success("Account registered successfully!")
+            st.rerun()
 
     st.markdown("---")
-    st.subheader("Registered Accounts Registry")
-    accounts_df = pd.read_sql("SELECT * FROM master_accounts", engine)
-    st.dataframe(accounts_df, use_container_width=True)
+
+    # SECTION 3: MANAGE REGISTERED ACCOUNTS (EDIT / DELETE)
+    st.subheader("3. Registered Accounts Registry & Actions")
+    accounts_df = pd.read_sql(
+        "SELECT * FROM master_accounts ORDER BY id ASC", engine
+    )
+
+    if not accounts_df.empty:
+        for index, row in accounts_df.iterrows():
+            with st.expander(
+                f"📌 {row['bank_shortname']} - {row['account_number']} ({row['bu']})"
+            ):
+                col_info, col_btn1, col_btn2 = st.columns([3, 1, 1])
+                with col_info:
+                    st.write(
+                        f"**BU:** {row['bu']} | **Dept:** {row['department']} | **Currency:** {row['currency']}"
+                    )
+                    st.write(
+                        f"**Bank:** {row['bank_name']} | **Account Name:** {row['account_name']}"
+                    )
+
+                # DELETE ACTION
+                if col_btn2.button("🗑️ Delete", key=f"del_{row['id']}"):
+                    with engine.connect() as conn:
+                        conn.execute(
+                            text(
+                                "DELETE FROM master_accounts WHERE id = :id"
+                            ),
+                            {"id": row["id"]},
+                        )
+                        conn.commit()
+                    st.warning("Account deleted!")
+                    st.rerun()
+
+                # EDIT ACTION
+                if col_btn1.button("✏️ Edit", key=f"edit_btn_{row['id']}"):
+                    st.session_state[f"editing_{row['id']}"] = True
+
+                if st.session_state.get(f"editing_{row['id']}", False):
+                    with st.form(f"edit_form_{row['id']}"):
+                        e_bu = st.text_input("BU", value=row["bu"])
+                        e_dept = st.text_input(
+                            "Department", value=row["department"]
+                        )
+                        e_bs = st.text_input(
+                            "Bank Short Name", value=row["bank_shortname"]
+                        )
+                        e_bn = st.text_input(
+                            "Bank Name", value=row["bank_name"]
+                        )
+                        e_an = st.text_input(
+                            "Account Number", value=row["account_number"]
+                        )
+                        e_ana = st.text_input(
+                            "Account Name", value=row["account_name"]
+                        )
+                        curr_idx = (
+                            available_currencies.index(row["currency"])
+                            if row["currency"] in available_currencies
+                            else 0
+                        )
+                        e_curr = st.selectbox(
+                            "Currency", available_currencies, index=curr_idx
+                        )
+
+                        if st.form_submit_button("Update Account"):
+                            with engine.connect() as conn:
+                                conn.execute(
+                                    text("""
+                                    UPDATE master_accounts 
+                                    SET bu = :bu, department = :dept, bank_shortname = :bs, 
+                                        bank_name = :bn, account_number = :an, account_name = :ana, currency = :curr
+                                    WHERE id = :id
+                                """),
+                                    {
+                                        "bu": e_bu,
+                                        "dept": e_dept,
+                                        "bs": e_bs,
+                                        "bn": e_bn,
+                                        "an": e_an,
+                                        "ana": e_ana,
+                                        "curr": e_curr,
+                                        "id": row["id"],
+                                    },
+                                )
+                                conn.commit()
+                            st.session_state[f"editing_{row['id']}"] = False
+                            st.success("Account updated successfully!")
+                            st.rerun()
+    else:
+        st.info("No master accounts registered yet.")
 
 # ---------------------------------------------------------
 # DAILY EX RATES
@@ -172,24 +260,36 @@ elif menu == "Daily EX Rates":
     st.title("💱 Foreign Exchange Rate Management")
 
     today = pd.to_datetime("today").date()
-
-    # Get registered non-USD currencies for pair dropdown
-    all_currencies = [c for c in get_currencies() if c != "USD"]
+    all_currencies = get_currencies()
 
     st.subheader("Log Daily Rate")
 
-    # Sequence: Date -> Rate -> Currency
-    c1, c2, c3 = st.columns([1, 1.5, 1.5])
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1.5])
     rate_date = c1.date_input("Date", today)
-    rate_val = c2.number_input(
-        "Rate", value=0.0000, format="%.4f", step=0.0001
+
+    # Set default FROM = AED
+    default_from_idx = (
+        all_currencies.index("AED") if "AED" in all_currencies else 0
+    )
+    from_curr = c2.selectbox(
+        "From Currency", all_currencies, index=default_from_idx
     )
 
-    col_fix, col_drop = c3.columns([0.4, 1])
-    col_fix.markdown("<br><b>USD /</b>", unsafe_allow_html=True)
-    target_currency = col_drop.selectbox("Target Currency", all_currencies)
+    # List 2 excludes chosen From Currency; Default TO = SDG
+    to_options = [c for c in all_currencies if c != from_curr]
+    default_to_idx = (
+        to_options.index("SDG")
+        if "SDG" in to_options
+        else (0 if to_options else 0)
+    )
+    to_curr = c3.selectbox(
+        "To Currency", to_options, index=default_to_idx
+    )
 
-    full_pair = f"USD/{target_currency}"
+    rate_val = c4.number_input(
+        "Rate", value=0.0000, format="%.4f", step=0.0001
+    )
+    full_pair = f"{from_curr}/{to_curr}"
 
     if st.button("Record Rate"):
         if rate_val <= 0:
@@ -212,9 +312,17 @@ elif menu == "Daily EX Rates":
     st.markdown("---")
     st.subheader("EX Rate Analytics & Trends")
 
+    existing_pairs_df = pd.read_sql(
+        "SELECT DISTINCT currency_pair FROM exchange_rates", engine
+    )
+    existing_pairs = (
+        existing_pairs_df["currency_pair"].tolist()
+        if not existing_pairs_df.empty
+        else [full_pair]
+    )
+
     selected_pair = st.selectbox(
-        "Select Currency Pair to View",
-        [f"USD/{c}" for c in all_currencies],
+        "Select Currency Pair to View", existing_pairs
     )
 
     rates_df = pd.read_sql(
