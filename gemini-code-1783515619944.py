@@ -175,7 +175,7 @@ def init_db():
             
             INSERT INTO currencies (code) 
             VALUES ('USD'), ('EUR'), ('EGP'), ('GBP'), ('SAR'), ('AED'), ('SDG')
-            ON CONFLICT DO NOTHING;
+            ON CONFLICT DO UPDATE;
         """),
         {"default_pass": hash_password("admin123")},
     )
