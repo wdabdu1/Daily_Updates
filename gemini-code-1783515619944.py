@@ -81,18 +81,20 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
-    with engine.connect() as conn:
-        conn.execute(
-            text("""
-            -- Force drop and recreate users table to ensure correct columns
-            DROP TABLE IF EXISTS users CASCADE;
-
-            CREATE TABLE users (
+  with engine.connect() as conn:
+    conn.execute(
+        text("""
+            -- Ensure users table exists
+            CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(50) UNIQUE NOT NULL,
-                password_hash VARCHAR(64) NOT NULL,
+                password_hash VARCHAR(64),
                 role VARCHAR(20) DEFAULT 'Read/Write'
             );
+
+            -- Directly patch missing columns if an old table exists
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(64);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'Read/Write';
 
             CREATE TABLE IF NOT EXISTS bus (
                 id SERIAL PRIMARY KEY,
@@ -157,38 +159,39 @@ def init_db():
             VALUES ('USD'), ('EUR'), ('EGP'), ('GBP'), ('SAR'), ('AED'), ('SDG')
             ON CONFLICT DO NOTHING;
         """),
-            {"default_pass": hash_password("admin123")},
-        )
-        conn.commit()
+        {"default_pass": hash_password("admin123")},
+    )
+    conn.commit()
 
-# ---------------------------------------------------------
-# AUTHENTICATION MODULE
-# ---------------------------------------------------------
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-    st.session_state.user_role = None
-    st.session_state.username = None
+
+# Call init_db immediately to apply structural changes BEFORE any query
+init_db()
+
 
 def login():
-    st.title("🛳️ Treasury Portal Login")
-    with st.form("login_form"):
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
-        if st.form_submit_button("Sign In"):
-            h = hash_password(p)
-            user_df = pd.read_sql(
-                text("SELECT username, role FROM users WHERE username = :u AND password_hash = :h"),
-                engine,
-                params={"u": u, "h": h}
-            )
-            if not user_df.empty:
-                st.session_state.authenticated = True
-                st.session_state.username = user_df.iloc[0]["username"]
-                st.session_state.user_role = user_df.iloc[0]["role"]
-                st.success("Login successful!")
-                st.rerun()
-            else:
-                st.error("Invalid username or password.")
+  st.title("🛳️ Treasury Portal Login")
+  with st.form("login_form"):
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
+    if st.form_submit_button("Sign In"):
+      h = hash_password(p)
+      # Wrapped with text() construct to resolve parameter parsing error
+      user_df = pd.read_sql(
+          text(
+              "SELECT username, role FROM users WHERE username = :u AND"
+              " password_hash = :h"
+          ),
+          engine,
+          params={"u": u, "h": h},
+      )
+      if not user_df.empty:
+        st.session_state.authenticated = True
+        st.session_state.username = user_df.iloc[0]["username"]
+        st.session_state.user_role = user_df.iloc[0]["role"]
+        st.success("Login successful!")
+        st.rerun()
+      else:
+        st.error("Invalid username or password.")
 
 if not st.session_state.authenticated:
     login()
