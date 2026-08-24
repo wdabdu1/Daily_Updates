@@ -81,34 +81,18 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
-  with engine.connect() as conn:
-    conn.execute(
-        text("""
-            -- Create users table if it doesn't exist
-            CREATE TABLE IF NOT EXISTS users (
+    with engine.connect() as conn:
+        conn.execute(
+            text("""
+            -- Force drop and recreate users table to ensure correct columns
+            DROP TABLE IF EXISTS users CASCADE;
+
+            CREATE TABLE users (
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(50) UNIQUE NOT NULL,
-                password_hash VARCHAR(64),
+                password_hash VARCHAR(64) NOT NULL,
                 role VARCHAR(20) DEFAULT 'Read/Write'
             );
-
-            -- Automatically add password_hash & role columns if an old users table exists
-            DO $$ 
-            BEGIN 
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns 
-                    WHERE table_name='users' AND column_name='password_hash'
-                ) THEN 
-                    ALTER TABLE users ADD COLUMN password_hash VARCHAR(64);
-                END IF;
-
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns 
-                    WHERE table_name='users' AND column_name='role'
-                ) THEN 
-                    ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'Read/Write';
-                END IF;
-            END $$;
 
             CREATE TABLE IF NOT EXISTS bus (
                 id SERIAL PRIMARY KEY,
@@ -164,7 +148,7 @@ def init_db():
                 UNIQUE(position_date, account_id)
             );
             
-            -- Seed Default Manager User (admin / admin123)
+            -- Seed Default Manager User
             INSERT INTO users (username, password_hash, role)
             VALUES ('admin', :default_pass, 'Manager')
             ON CONFLICT (username) DO NOTHING;
@@ -173,9 +157,9 @@ def init_db():
             VALUES ('USD'), ('EUR'), ('EGP'), ('GBP'), ('SAR'), ('AED'), ('SDG')
             ON CONFLICT DO NOTHING;
         """),
-        {"default_pass": hash_password("admin123")},
-    )
-    conn.commit()
+            {"default_pass": hash_password("admin123")},
+        )
+        conn.commit()
 
 # ---------------------------------------------------------
 # AUTHENTICATION MODULE
