@@ -168,10 +168,11 @@ def init_db():
                 UNIQUE(position_date, account_id)
             );
             
-            -- Seed Default Manager User
+            # Seed Default Manager User (Forces password reset to admin123)
             INSERT INTO users (username, password_hash, role)
             VALUES ('admin', :default_pass, 'Manager')
-            ON CONFLICT (username) DO NOTHING;
+            ON CONFLICT (username) DO UPDATE 
+            SET password_hash = EXCLUDED.password_hash, role = EXCLUDED.role;
             
             INSERT INTO currencies (code) 
             VALUES ('USD'), ('EUR'), ('EGP'), ('GBP'), ('SAR'), ('AED'), ('SDG')
