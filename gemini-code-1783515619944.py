@@ -3,10 +3,14 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 
-# Database setup (Replace with your database URL variable/string)
-DATABASE_URL = st.secrets.get("DATABASE_URL", "postgresql://...")
-engine = create_engine(DATABASE_URL)
+# Safely fetches DATABASE_URL from Railway without throwing StreamlitSecretNotFoundError
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
+if not DATABASE_URL:
+  # Fallback for local testing if running via Streamlit secrets
+  DATABASE_URL = st.secrets.get("DATABASE_URL")
+
+engine = create_engine(DATABASE_URL)
 
 def hash_password(password):
   return hashlib.sha256(password.encode()).hexdigest()
