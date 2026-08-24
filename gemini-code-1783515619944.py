@@ -19,9 +19,9 @@ engine = create_engine(DATABASE_URL)
 
 
 def init_db():
-    with engine.connect() as conn:
-        conn.execute(
-            text("""
+  with engine.connect() as conn:
+    conn.execute(
+        text("""
             CREATE TABLE IF NOT EXISTS currencies (
                 code VARCHAR(10) PRIMARY KEY
             );
@@ -40,9 +40,22 @@ def init_db():
                 rate_date DATE,
                 currency_pair VARCHAR(20),
                 rate NUMERIC(15, 4),
-                is_auto_filled BOOLEAN DEFAULT FALSE,
-                UNIQUE(rate_date, currency_pair)
+                is_auto_filled BOOLEAN DEFAULT FALSE
             );
+            
+            -- Fix the Unique Constraint for ON CONFLICT (rate_date, currency_pair)
+            ALTER TABLE exchange_rates DROP CONSTRAINT IF EXISTS exchange_rates_rate_date_key;
+            
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'uq_rate_date_pair'
+                ) THEN 
+                    ALTER TABLE exchange_rates 
+                    ADD CONSTRAINT uq_rate_date_pair UNIQUE (rate_date, currency_pair);
+                END IF;
+            END $$;
+
             CREATE TABLE IF NOT EXISTS bank_dues (
                 id SERIAL PRIMARY KEY,
                 account_id INT REFERENCES master_accounts(id) ON DELETE CASCADE,
@@ -63,8 +76,8 @@ def init_db():
             VALUES ('USD'), ('EUR'), ('EGP'), ('GBP'), ('SAR'), ('AED'), ('SDG')
             ON CONFLICT DO NOTHING;
         """)
-        )
-        conn.commit()
+    )
+    conn.commit()
 
 
 init_db()
