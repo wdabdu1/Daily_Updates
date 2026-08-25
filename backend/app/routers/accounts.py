@@ -44,9 +44,10 @@ def create_account(
     db: Session = Depends(get_db),
     _u: models.User = Depends(require_manager),
 ):
-    division = db.query(models.Division).get(payload.division_id)
-    if not division or division.business_unit_id != payload.business_unit_id:
-        raise HTTPException(400, "This division does not belong to the selected business unit.")
+    if payload.division_id is not None:
+        division = db.query(models.Division).get(payload.division_id)
+        if not division or division.business_unit_id != payload.business_unit_id:
+            raise HTTPException(400, "This division does not belong to the selected business unit.")
     if not db.query(models.Bank).get(payload.bank_id):
         raise HTTPException(400, "Unknown bank.")
     if not db.query(models.Currency).get(payload.currency):

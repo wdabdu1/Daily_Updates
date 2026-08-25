@@ -150,10 +150,21 @@ def breakdown(
             label = a.bank.short_name if a.bank else "Unassigned"
         groups.setdefault(label, []).append(a)
 
-    rows = []
+    computed = []
+    grand_total_recv = Decimal("0")
     for label, group_accounts in sorted(groups.items()):
         total_recv, total_dues, _unconv = _compute_group(db, group_accounts, as_of)
+        grand_total_recv += total_recv
+        computed.append((label, total_recv, total_dues))
+
+    rows = []
+    for label, total_recv, total_dues in computed:
         gap = total_recv - total_dues
+        pct = None
+        if grand_total_recv != 0:
+            pct = (total_recv / grand_total_recv * 100).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
         rows.append(
             schemas.CoverBreakdownRow(
                 group_label=label,
@@ -161,6 +172,7 @@ def breakdown(
                 total_dues_sdg=total_dues,
                 gap_sdg=gap,
                 status="covered" if gap >= 0 else "shortfall",
+                pct_of_total_receivables=pct,
             )
         )
     return rows

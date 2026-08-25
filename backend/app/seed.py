@@ -15,6 +15,7 @@ from .config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME, SEED_CURRENC
 from .database import Base, SessionLocal, engine
 from . import models
 from .migrate_legacy import prepare_legacy_rename, run_legacy_migration
+from .schema_upgrades import apply_schema_upgrades
 
 logger = logging.getLogger("seed")
 
@@ -24,6 +25,11 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     report = run_legacy_migration(engine, legacy_present)
     for line in report:
+        logger.info(line)
+
+    # Runs regardless of legacy_present -- these patch the CURRENT schema,
+    # not a migration from the old app's schema.
+    for line in apply_schema_upgrades(engine):
         logger.info(line)
 
     db = SessionLocal()

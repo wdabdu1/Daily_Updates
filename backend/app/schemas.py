@@ -90,8 +90,8 @@ class CurrencyPairCreate(BaseModel):
 class MasterAccountOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    business_unit_id: int
-    division_id: int
+    business_unit_id: Optional[int] = None
+    division_id: Optional[int] = None
     bank_id: int
     account_name: str
     account_number: str
@@ -102,8 +102,11 @@ class MasterAccountOut(BaseModel):
 
 
 class MasterAccountCreate(BaseModel):
-    business_unit_id: int
-    division_id: int
+    # Optional: some Bank Dues data only reliably identifies the Bank/Account
+    # -- Business Unit/Division attribution can be added later once
+    # dedicated per-division dues data is available.
+    business_unit_id: Optional[int] = None
+    division_id: Optional[int] = None
     bank_id: int
     account_name: str
     account_number: str
@@ -187,3 +190,9 @@ class CoverBreakdownRow(BaseModel):
     total_dues_sdg: Decimal
     gap_sdg: Decimal
     status: str
+    # Each group's receivables as a % of company-wide total receivables --
+    # lets you see how much of the overall exposure a group represents even
+    # when Dues can't be reliably attributed to the same group (e.g. Bank
+    # Dues data that only identifies the Bank, not the Business
+    # Unit/Division that will ultimately cover it).
+    pct_of_total_receivables: Optional[Decimal] = None

@@ -22,9 +22,19 @@ interface BreakdownRow {
   total_dues_sdg: string;
   gap_sdg: string;
   status: "covered" | "shortfall";
+  pct_of_total_receivables: string | null;
 }
 
 type GroupBy = "business_unit" | "division" | "bank";
+
+// Plain proportion (no +/- sign, unlike formatPct which is used for gap_pct
+// where the sign is meaningful).
+function formatShare(value: string | null): string {
+  if (value === null) return "—";
+  const n = parseFloat(value);
+  if (Number.isNaN(n)) return "—";
+  return `${n.toFixed(2)}%`;
+}
 
 export function Home() {
   const [summary, setSummary] = useState<HomeSummary | null>(null);
@@ -166,6 +176,38 @@ export function Home() {
           effectively subsidizing it — see Analysis for the full drill-down.
         </p>
       </div>
+
+      {breakdown.length > 0 && (
+        <div className="card">
+          <h2 className="section-title">Receivables Contribution</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            How much each {groupBy === "business_unit" ? "business unit" : groupBy === "division" ? "division" : "bank"}{" "}
+            contributes to total receivables — useful when Dues can't yet be attributed the same
+            way (an "Unassigned" row means those dues are only linked to a Bank/Account so far, not
+            a Business Unit or Division).
+          </p>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>{groupBy === "business_unit" ? "Business Unit" : groupBy === "division" ? "Division" : "Bank"}</th>
+                <th className="numeric">Receivables</th>
+                <th className="numeric">% of Total Receivables</th>
+                <th className="numeric">Active Dues</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdown.map((row) => (
+                <tr key={row.group_label}>
+                  <td>{row.group_label}</td>
+                  <td className="numeric">{formatSDG(row.total_receivables_sdg)}</td>
+                  <td className="numeric">{formatShare(row.pct_of_total_receivables)}</td>
+                  <td className="numeric">{formatSDG(row.total_dues_sdg)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

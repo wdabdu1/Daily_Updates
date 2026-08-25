@@ -115,18 +115,25 @@ def dues_import_template(_u: models.User = Depends(get_current_user)):
             "Logistics", "Freight", "ONB", "Omdurman National Bank",
             "Freight Ops SDG", "2002-SDG", "SDG", "2026-09-25", "Trade Finance", 250000, "Active",
         ],
+        [
+            "", "", "CIB", "Commercial International Bank",
+            "Unattributed AED", "1003-AED", "SDG", "2026-09-30", "Overdraft", 150000, "Active",
+        ],
     ]
     notes = [
-        "Business Unit / Division / Bank Short Name / Account Number identify the account this"
-        " due belongs to. If that combination doesn't exist yet under Settings, it's created"
-        " automatically from this row (Bank Full Name is only used the first time a new Bank"
-        " Short Name appears; Currency must already be a known code).",
+        "Bank Short Name + Account Number together identify the account this due belongs to. If"
+        " that combination doesn't exist yet under Settings, it's created automatically from this"
+        " row (Bank Full Name is only used the first time a new Bank Short Name appears; Currency"
+        " must already be a known code).",
+        "Business Unit and Division are OPTIONAL -- leave them blank if you don't have reliable"
+        " BU/Division attribution for this due yet (see the third example row). It shows up as"
+        " 'Unassigned' in the Home/Analysis breakdowns until you know it, and you can fill it in"
+        " later by re-uploading the same Bank + Account Number with the BU/Division now specified.",
         "Account Number + Bank Short Name together should be unique per account -- reusing the"
         " same pair on multiple rows refers to the same account each time.",
-        "Uploading a row whose Business Unit + Division + Bank + Account Number + Due Date +"
-        " Facility Type all match an existing due UPDATES that due's Amount/Status rather than"
-        " creating a duplicate -- this is how you correct test data or replace it with final"
-        " figures by re-uploading.",
+        "Re-uploading a row for the same account (Bank + Account Number) + Due Date + Facility"
+        " Type UPDATES that due's Amount/Status rather than creating a duplicate -- this is how"
+        " you correct test data or replace it with final figures.",
         "Due Date must be YYYY-MM-DD (or any format Excel stores as a real date).",
         "Status should be 'Active' or 'Settled'. Amount is a number, e.g. 300000 or 300,000.00 --"
         " thousands-separator commas are fine, just don't include a currency symbol.",
@@ -136,7 +143,15 @@ def dues_import_template(_u: models.User = Depends(get_current_user)):
     )
 
 
-def _get_or_create_bu(db: Session, name: str) -> models.BusinessUnit:
+def _get_or_create_bu(db: Session, name: str) -> models.BusinessUnit | None:
+    """Business Unit is optional on an account -- some Bank Dues data only
+    reliably identifies the Bank/Account, not which BU/Division will
+    ultimately cover it. A blank cell leaves the account's business_unit_id
+    NULL (shown as "Unassigned" in breakdowns) rather than inventing a
+    placeholder BU."""
+    name = (name or "").strip()
+    if not name or name.lower() == "nan":
+        return None
     bu = db.query(models.BusinessUnit).filter(models.BusinessUnit.name == name).first()
     if not bu:
         bu = models.BusinessUnit(name=name)
@@ -145,7 +160,12 @@ def _get_or_create_bu(db: Session, name: str) -> models.BusinessUnit:
     return bu
 
 
-def _get_or_create_division(db: Session, name: str, bu_id: int) -> models.Division:
+def _get_or_create_division(db: Session, name: str, bu_id: int | None) -> models.Division | None:
+    """Optional for the same reason as _get_or_create_bu -- also requires a
+    known BU, since a Division only makes sense scoped to one."""
+    name = (name or "").strip()
+    if not name or name.lower() == "nan" or bu_id is None:
+        return None
     division = (
         db.query(models.Division)
         .filter(models.Division.name == name, models.Division.business_unit_id == bu_id)
@@ -169,8 +189,8 @@ def _get_or_create_bank(db: Session, short_name: str, full_name: str) -> models.
 
 def _get_or_create_account(
     db: Session,
-    bu_id: int,
-    division_id: int,
+    bu_id: int | None,
+    division_id: int | None,
     bank_id: int,
     account_name: str,
     account_number: str,
@@ -248,8 +268,13 @@ def dues_import(
             facility_type = str(row["Facility Type"]).strip()
             amount = parse_decimal(row["Amount"])
             status = str(row["Status"]).strip().title() if pd.notna(row["Status"]) else "Active"
-            if not bu_name or not division_name or not bank_short or not account_number:
-                raise ValueError("Business Unit, Division, Bank Short Name and Account Number are all required.")
+            # Business Unit / Division are optional -- some Bank Dues data
+            # only reliably identifies the Bank/Account (see
+            # _get_or_create_bu/_get_or_create_division). Bank + Account
+            # Number are still required to identify which account this due
+            # belongs to.
+            if not bank_short or not account_number:
+                raise ValueError("Bank Short Name and Account Number are required.")
         except (ValueError, InvalidOperation, TypeError) as e:
             errors.append(schemas.ImportRowError(row_number=row_number, reason=f"Couldn't parse row: {e}"))
             continue
@@ -271,10 +296,16 @@ def dues_import(
         try:
             with db.begin_nested():
                 bu = _get_or_create_bu(db, bu_name)
-                division = _get_or_create_division(db, division_name, bu.id)
+                division = _get_or_create_division(db, division_name, bu.id if bu else None)
                 bank = _get_or_create_bank(db, bank_short, bank_full)
                 account = _get_or_create_account(
-                    db, bu.id, division.id, bank.id, account_name or account_number, account_number, currency
+                    db,
+                    bu.id if bu else None,
+                    division.id if division else None,
+                    bank.id,
+                    account_name or account_number,
+                    account_number,
+                    currency,
                 )
 
                 existing = (

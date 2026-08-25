@@ -89,8 +89,12 @@ class MasterAccount(Base):
     __tablename__ = "master_accounts"
 
     id = Column(Integer, primary_key=True)
-    business_unit_id = Column(Integer, ForeignKey("business_units.id"), nullable=False)
-    division_id = Column(Integer, ForeignKey("divisions.id"), nullable=False)
+    # Nullable: some Bank Dues data only identifies the Bank/Account, with no
+    # reliable Business Unit or Division attribution yet (mixed/unspecified
+    # in the source data). Left as "Unassigned" until dedicated per-division
+    # dues data is available -- see home.py's breakdown grouping.
+    business_unit_id = Column(Integer, ForeignKey("business_units.id"), nullable=True)
+    division_id = Column(Integer, ForeignKey("divisions.id"), nullable=True)
     bank_id = Column(Integer, ForeignKey("banks.id"), nullable=False)
     account_name = Column(String(150), nullable=False)
     account_number = Column(String(100), nullable=False)

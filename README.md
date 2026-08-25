@@ -67,12 +67,23 @@ Both the **FX** and **Bank Dues** pages have a "Download Template" button (an .x
 - Number columns (**Rate**, **Amount**) accept plain numbers or thousands-separator-formatted ones — `3610`, `3,610`, and `3,610.00` all work. Just don't include a currency symbol.
 - Date columns (**Date**, **Due Date**): if you extend a template by selecting a date cell and dragging Excel's fill handle down, make sure that column is formatted as an actual **Date** (not stored as text) first — Excel only rolls a real date correctly from month to month (Aug 31 → Sep 1). If the column is text, the fill handle just increments the trailing number and produces invalid dates like `2026-08-32`, which the import will reject with a clear per-row error rather than guessing what you meant.
 
+## Settings: Business Units, Divisions, Banks, Currencies, Currency Pairs, Users
+
+Settings (Manager only) now has a real management UI instead of relying only on Excel imports to create these implicitly:
+
+- **Business Units** and **Divisions** (a division belongs to one business unit) — add and view.
+- **Banks** — short name + full name.
+- **Currencies** — a simple code list (AED, USD, SDG, etc.) plus **Currency Pairs**, which control which rate types a pair tracks (any pair with SDG on one side automatically gets Market + CBOS + Pricing; everything else just gets Market).
+- **Users** — add a user with a role (Manager/ReadWrite/ReadOnly), and reset any user's password (this is also how you get a migrated legacy user, or anyone who forgot their password, back into the system).
+
+The Excel imports on the FX Rates and Bank Dues pages still auto-create anything you leave out, so you don't have to predefine everything here before importing — but doing so up front avoids near-duplicate BU/Division names from typos across different uploads.
+
 ## Wiping test data
 
 Settings has a "Danger Zone" (Manager only): pick a scope (**Transactions only** — Bank Dues, Receivables, FX Rates; or **Everything** — also Business Units, Divisions, Banks, Master Accounts), type `WIPE` to confirm, and clear it. Users and the base currency list are never touched by either scope. Use this once you're done testing and ready to load final figures.
 
-## Project status: Phases 1–4 substantially in place (Phase 5 partial)
+## Project status: Phases 1–5 in place; FX multi-currency view design in progress
 
-Built: project skeleton, auth (JWT, 3 roles), the Bosch-inspired top nav, the legacy-data migration path (with the lockout fix above), the Home dashboard (coverage gap in SDG + USD-equivalent, BU/Division/Bank cross-subsidy breakdown), the FX Rates page (import + current/prior-month carry-forward table), the Bank Dues page (import + settle + the Today's Receivables workflow), and the Analysis page (Cover Analysis trend with BU/Division/Bank/Period filters, FX Analysis comparing Market/CBOS/Pricing over a period).
+Built: project skeleton, auth (JWT, 3 roles), the Bosch-inspired top nav, the legacy-data migration path (with the lockout and sequence-desync fixes above), the Home dashboard (coverage gap in SDG + USD-equivalent, BU/Division/Bank cross-subsidy breakdown), the FX Rates page (import + current/prior-month carry-forward table), the Bank Dues page (import + settle + the Today's Receivables workflow), the Analysis page (Cover Analysis trend with BU/Division/Bank/Period filters, FX Analysis comparing Market/CBOS/Pricing over a period), and the Settings management UI described above.
 
-Still to come (Settings, the rest of Phase 5): a proper management UI for Business Units/Divisions/Banks/Currencies/Master Accounts (currently created implicitly via Excel import) and User management (create users, change roles, self-service password change). The Danger Zone reset is the only Settings feature built so far.
+Still to come: table filter/sort UI (@tanstack/react-table is installed but not wired in yet), and a bigger FX redesign currently being scoped with the user — a combined Market/CBOS/Pricing table across a full year of dates, viewable in either AED or USD (with USD computed on the fly from AED + the latest USD/AED rate when no direct USD rate was uploaded), and a selectable display currency on the Home page.
