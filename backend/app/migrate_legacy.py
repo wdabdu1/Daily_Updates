@@ -354,22 +354,45 @@ def run_legacy_migration(engine: Engine, legacy_present: bool) -> list[str]:
             )
 
         # ---- 7. Users: sha256 passwords can't be verified as bcrypt ----
+        # IMPORTANT: this isn't just a "reset it later" inconvenience -- if
+        # left as-is, EVERY migrated user is permanently locked out, and
+        # since the Settings > User Management UI that could reset a
+        # password doesn't exist until Phase 5, and reaching it requires
+        # already being logged in as a Manager, a fully broken hash means
+        # nobody can ever log in to fix it. So: any hash that isn't already
+        # a bcrypt hash (bcrypt hashes always start with $2) is reset to a
+        # known bootstrap password instead of left broken. This is
+        # imported lazily to avoid a circular import at module load time.
+        from .auth import hash_password
+        from .config import DEFAULT_ADMIN_PASSWORD
+
         user_cols = _table_columns(inspector, "users")
         if user_cols:
-            users = conn.execute(text("SELECT id, username, role FROM users")).fetchall()
-            for uid, username, old_role in users:
+            users = conn.execute(
+                text("SELECT id, username, role, password_hash FROM users")
+            ).fetchall()
+            reset_usernames = []
+            for uid, username, old_role, pw_hash in users:
                 new_role = OLD_ROLE_MAP.get(old_role, "ReadWrite")
                 if new_role != old_role:
                     conn.execute(
                         text("UPDATE users SET role = :r WHERE id = :id"),
                         {"r": new_role, "id": uid},
                     )
-            report.append(
-                f"Normalized roles for {len(users)} existing user(s). NOTE: old"
-                " passwords were unsalted SHA256 and cannot be verified against the"
-                " new bcrypt scheme -- every migrated user (except the reseeded"
-                " 'admin' default) will need a password reset from Settings > User"
-                " Management before they can log in."
-            )
+                if not (pw_hash or "").startswith("$2"):
+                    conn.execute(
+                        text("UPDATE users SET password_hash = :h WHERE id = :id"),
+                        {"h": hash_password(DEFAULT_ADMIN_PASSWORD), "id": uid},
+                    )
+                    reset_usernames.append(username)
+            report.append(f"Normalized roles for {len(users)} existing user(s).")
+            if reset_usernames:
+                report.append(
+                    f"SECURITY: reset password for {len(reset_usernames)} migrated"
+                    f" user(s) to the bootstrap default ({', '.join(reset_usernames)})"
+                    " because their old SHA256 hash can't be verified under the new"
+                    " bcrypt scheme. Log in and change these immediately -- everyone"
+                    " listed currently shares the same known password."
+                )
 
     return report
