@@ -1,16 +1,23 @@
-FROM python:3.11-slim
+# Multi-stage build: compile the React frontend, then serve it from the
+# FastAPI backend as a single Railway service (same simplicity as the old
+# single Streamlit process).
 
+FROM node:20-slim AS frontend-build
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
+FROM python:3.11-slim AS backend
 WORKDIR /app
 
-# Copy the requirements file and install Streamlit
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your actual tracking script into the container
-COPY . .
+COPY backend/ .
+# The built frontend lands where main.py expects it: backend/static
+COPY --from=frontend-build /frontend/dist ./static
 
-# Expose the standard port that web traffic uses
 EXPOSE 8501
-
-# Force Streamlit to run your specific file name on the right port
-CMD ["streamlit", "run", "gemini-code-1783515619944.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8501"]
