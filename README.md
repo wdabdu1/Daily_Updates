@@ -49,14 +49,26 @@ Environment variables to set in Railway:
 
 On startup, the app inspects the database. If it finds the *old* app's tables, it automatically migrates what it can into the new schema (see `backend/app/migrate_legacy.py` for the exact mapping) and renames anything it can't safely reshape to `<table>_legacy` rather than deleting it. If the database is empty, it just creates the new schema fresh. Either way this is safe to deploy directly onto your existing Railway Postgres.
 
-One migration caveat: existing user passwords were unsalted SHA256 and can't be converted to the new bcrypt scheme. Every migrated user (other than a freshly-seeded default admin) will need a password reset from Settings > User Management before they can log in again.
+One migration caveat: existing user passwords were unsalted SHA256 and can't be converted to the new bcrypt scheme, so any migrated user's password is reset to the bootstrap default (`admin`/`admin123` unless you changed `DEFAULT_ADMIN_PASSWORD`) instead of being left unusable. **Change this immediately after logging in** — everyone migrated currently shares the same known password, and there's no self-service password change yet (planned for the full Settings page).
 
 ## Fixed from the old app
-- The old app reset the `admin` password to `admin123` on *every* restart/deploy, silently reverting any password change in production. The new app only seeds a default admin the very first time the `users` table is empty.
+- The old app reset the `admin` password to `admin123` on *every* restart/deploy, silently reverting any password change in production. The new app only resets a password when the migrated hash genuinely can't be verified (not bcrypt-shaped) — a real password, once set, survives restarts.
 - Passwords are now bcrypt-hashed instead of unsalted SHA256.
 
-## Project status: Phase 1 of 5
+## Data entry: Excel import (Bank Dues & FX Rates)
 
-Built so far: project skeleton, auth (JWT, 3 roles: Manager / ReadWrite / ReadOnly), the Bosch-inspired top nav (Home | Analysis | Bank Dues | FX | Settings), the legacy-data migration path, and the Home dashboard (today's Receivables vs. active Bank Dues, gap in SDG and USD-equivalent, and a Business Unit / Division / Bank drill-down to spot cross-subsidy between units). Analysis, Bank Dues, FX, and Settings pages are routed and role-gated but still placeholders — see the in-app "Coming in Phase N" notes.
+Both the **FX** and **Bank Dues** pages have a "Download Template" button (an .xlsx with example rows and a Notes sheet explaining the columns) and an upload control next to it.
 
-Next: Phase 2 (FX rate entry, carry-forward table, current/prior-month view), Phase 3 (Bank Dues registration + the Update Today's Receivables workflow), Phase 4 (Analysis: FX trend + Cover drill-down with filters), Phase 5 (Settings: BU/Division/Bank/Currency/User management).
+- **FX import**: rows are Date / Base Currency / Quote Currency / Rate Type (Market, CBOS, or Pricing) / Rate. Unknown currency pairs are created automatically; CBOS/Pricing are only accepted for a pair where SDG is one side. Re-uploading a row for a Date + Pair + Rate Type that already exists **updates** that rate rather than duplicating it — this is how you replace test data with final figures.
+- **Bank Dues import**: rows carry the full account chain (Business Unit / Division / Bank Short Name / Bank Full Name / Account Name / Account Number / Currency) plus the due itself (Due Date / Facility Type / Amount / Status). Any Business Unit, Division, Bank, or Account referenced that doesn't exist yet is created automatically from the row — you don't need to set these up first. Re-uploading the same account + due date + facility type updates the amount/status instead of duplicating.
+- **Today's Receivables**: not an Excel import — it's an interactive workflow on the Bank Dues page ("Start Update"), since it's meant to be a quick daily habit: every account shows up prefilled with its last recorded amount, you adjust what changed, and save. This is what feeds the Home page's coverage comparison, so you'll want to use it (or at least save it once) alongside uploading dues to see meaningful Home/Analysis results.
+
+## Wiping test data
+
+Settings has a "Danger Zone" (Manager only): pick a scope (**Transactions only** — Bank Dues, Receivables, FX Rates; or **Everything** — also Business Units, Divisions, Banks, Master Accounts), type `WIPE` to confirm, and clear it. Users and the base currency list are never touched by either scope. Use this once you're done testing and ready to load final figures.
+
+## Project status: Phases 1–4 substantially in place (Phase 5 partial)
+
+Built: project skeleton, auth (JWT, 3 roles), the Bosch-inspired top nav, the legacy-data migration path (with the lockout fix above), the Home dashboard (coverage gap in SDG + USD-equivalent, BU/Division/Bank cross-subsidy breakdown), the FX Rates page (import + current/prior-month carry-forward table), the Bank Dues page (import + settle + the Today's Receivables workflow), and the Analysis page (Cover Analysis trend with BU/Division/Bank/Period filters, FX Analysis comparing Market/CBOS/Pricing over a period).
+
+Still to come (Settings, the rest of Phase 5): a proper management UI for Business Units/Divisions/Banks/Currencies/Master Accounts (currently created implicitly via Excel import) and User management (create users, change roles, self-service password change). The Danger Zone reset is the only Settings feature built so far.

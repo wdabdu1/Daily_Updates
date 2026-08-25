@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .routers import accounts, analysis, auth, dues, fx, home, receivables, settings
+from .routers import accounts, admin, analysis, auth, dues, fx, home, receivables, settings
 from .seed import init_db
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +28,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(home.router)
 app.include_router(settings.router)
+app.include_router(admin.router)
 app.include_router(accounts.router)
 app.include_router(dues.router)
 app.include_router(receivables.router)

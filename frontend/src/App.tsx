@@ -4,7 +4,10 @@ import { ProtectedRoute } from "./components/ProtectedRoute";
 import { useAuth } from "./auth/AuthContext";
 import { Login } from "./pages/Login";
 import { Home } from "./pages/Home";
-import { ComingSoon } from "./pages/ComingSoon";
+import { Analysis } from "./pages/Analysis";
+import { BankDues } from "./pages/BankDues";
+import { FxRates } from "./pages/FxRates";
+import { Settings } from "./pages/Settings";
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -39,11 +42,7 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Shell>
-              <ComingSoon
-                title="Analysis"
-                phase="Phase 4"
-                detail="FX rate trend comparison (Market vs CBOS vs Pricing) and the Cover Analysis drill-down by Business Unit, Division, Bank and Period land here next."
-              />
+              <Analysis />
             </Shell>
           </ProtectedRoute>
         }
@@ -53,11 +52,7 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Shell>
-              <ComingSoon
-                title="Bank Dues"
-                phase="Phase 3"
-                detail="Registering bank dues and the 'Update Today's Receivables' workflow land here next."
-              />
+              <BankDues />
             </Shell>
           </ProtectedRoute>
         }
@@ -67,11 +62,7 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Shell>
-              <ComingSoon
-                title="FX Rates"
-                phase="Phase 2"
-                detail="Daily Market/CBOS/Pricing rate entry, the current-month table with collapsible prior months, and carry-forward gap-fill land here next."
-              />
+              <FxRates />
             </Shell>
           </ProtectedRoute>
         }
@@ -81,11 +72,7 @@ export default function App() {
         element={
           <ProtectedRoute managerOnly>
             <Shell>
-              <ComingSoon
-                title="Settings"
-                phase="Phase 5"
-                detail="Managing Business Units, Divisions, Banks, Currencies, Master Accounts and Users lands here next."
-              />
+              <Settings />
             </Shell>
           </ProtectedRoute>
         }

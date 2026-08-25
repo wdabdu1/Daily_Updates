@@ -1,17 +1,61 @@
-from fastapi import APIRouter, Depends
+from decimal import Decimal, InvalidOperation
+
+import pandas as pd
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
 from ..auth import get_current_user, require_write
 from ..database import get_db
-from ..export_utils import xlsx_response
+from ..export_utils import read_uploaded_xlsx, xlsx_response, xlsx_template_response
 
 router = APIRouter(prefix="/api/dues", tags=["dues"])
+
+DUES_TEMPLATE_COLUMNS = [
+    "Business Unit",
+    "Division",
+    "Bank Short Name",
+    "Bank Full Name",
+    "Account Name",
+    "Account Number",
+    "Currency",
+    "Due Date",
+    "Facility Type",
+    "Amount",
+    "Status",
+]
 
 
 @router.get("", response_model=list[schemas.BankDueOut])
 def list_dues(db: Session = Depends(get_db), _u: models.User = Depends(get_current_user)):
-    return db.query(models.BankDue).order_by(models.BankDue.due_date).all()
+    dues = (
+        db.query(models.BankDue)
+        .options(
+            joinedload(models.BankDue.account).joinedload(models.MasterAccount.business_unit),
+            joinedload(models.BankDue.account).joinedload(models.MasterAccount.division),
+            joinedload(models.BankDue.account).joinedload(models.MasterAccount.bank),
+        )
+        .order_by(models.BankDue.due_date)
+        .all()
+    )
+    out = []
+    for d in dues:
+        acct = d.account
+        out.append(
+            schemas.BankDueOut(
+                id=d.id,
+                account_id=d.account_id,
+                due_date=d.due_date,
+                facility_type=d.facility_type,
+                amount=d.amount,
+                status=d.status,
+                business_unit_name=acct.business_unit.name if acct and acct.business_unit else None,
+                division_name=acct.division.name if acct and acct.division else None,
+                bank_short_name=acct.bank.short_name if acct and acct.bank else None,
+                account_number=acct.account_number if acct else None,
+            )
+        )
+    return out
 
 
 @router.get("/export")
@@ -58,3 +102,190 @@ def settle_due(
         db.commit()
         db.refresh(due)
     return due
+
+
+@router.get("/import/template")
+def dues_import_template(_u: models.User = Depends(get_current_user)):
+    example_rows = [
+        [
+            "Corporate Treasury", "Operations", "CIB", "Commercial International Bank",
+            "Treasury Main AED", "1001-AED", "SDG", "2026-09-10", "Overdraft", 300000, "Active",
+        ],
+        [
+            "Logistics", "Freight", "ONB", "Omdurman National Bank",
+            "Freight Ops SDG", "2002-SDG", "SDG", "2026-09-25", "Trade Finance", 250000, "Active",
+        ],
+    ]
+    notes = [
+        "Business Unit / Division / Bank Short Name / Account Number identify the account this"
+        " due belongs to. If that combination doesn't exist yet under Settings, it's created"
+        " automatically from this row (Bank Full Name is only used the first time a new Bank"
+        " Short Name appears; Currency must already be a known code).",
+        "Account Number + Bank Short Name together should be unique per account -- reusing the"
+        " same pair on multiple rows refers to the same account each time.",
+        "Uploading a row whose Business Unit + Division + Bank + Account Number + Due Date +"
+        " Facility Type all match an existing due UPDATES that due's Amount/Status rather than"
+        " creating a duplicate -- this is how you correct test data or replace it with final"
+        " figures by re-uploading.",
+        "Due Date must be YYYY-MM-DD (or any format Excel stores as a real date).",
+        "Status should be 'Active' or 'Settled'. Amount is a plain number, no currency symbols"
+        " or thousands separators.",
+    ]
+    return xlsx_template_response(
+        DUES_TEMPLATE_COLUMNS, example_rows, notes, "bank_dues_template.xlsx"
+    )
+
+
+def _get_or_create_bu(db: Session, name: str) -> models.BusinessUnit:
+    bu = db.query(models.BusinessUnit).filter(models.BusinessUnit.name == name).first()
+    if not bu:
+        bu = models.BusinessUnit(name=name)
+        db.add(bu)
+        db.flush()
+    return bu
+
+
+def _get_or_create_division(db: Session, name: str, bu_id: int) -> models.Division:
+    division = (
+        db.query(models.Division)
+        .filter(models.Division.name == name, models.Division.business_unit_id == bu_id)
+        .first()
+    )
+    if not division:
+        division = models.Division(name=name, business_unit_id=bu_id)
+        db.add(division)
+        db.flush()
+    return division
+
+
+def _get_or_create_bank(db: Session, short_name: str, full_name: str) -> models.Bank:
+    bank = db.query(models.Bank).filter(models.Bank.short_name == short_name).first()
+    if not bank:
+        bank = models.Bank(short_name=short_name, full_name=full_name or short_name)
+        db.add(bank)
+        db.flush()
+    return bank
+
+
+def _get_or_create_account(
+    db: Session,
+    bu_id: int,
+    division_id: int,
+    bank_id: int,
+    account_name: str,
+    account_number: str,
+    currency: str,
+) -> models.MasterAccount:
+    account = (
+        db.query(models.MasterAccount)
+        .filter(
+            models.MasterAccount.bank_id == bank_id,
+            models.MasterAccount.account_number == account_number,
+        )
+        .first()
+    )
+    if not account:
+        account = models.MasterAccount(
+            business_unit_id=bu_id,
+            division_id=division_id,
+            bank_id=bank_id,
+            account_name=account_name,
+            account_number=account_number,
+            currency=currency,
+        )
+        db.add(account)
+        db.flush()
+    return account
+
+
+@router.post("/import", response_model=schemas.ImportResult)
+def dues_import(
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_write),
+):
+    try:
+        df = read_uploaded_xlsx(file.file.read())
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't read this file as an Excel workbook: {e}")
+
+    missing = [c for c in DUES_TEMPLATE_COLUMNS if c not in df.columns]
+    if missing:
+        raise HTTPException(
+            400,
+            f"Missing column(s): {', '.join(missing)}. Download the template to see the"
+            " expected columns.",
+        )
+
+    imported = 0
+    updated = 0
+    errors: list[schemas.ImportRowError] = []
+
+    for idx, row in df.iterrows():
+        row_number = idx + 2
+        try:
+            bu_name = str(row["Business Unit"]).strip()
+            division_name = str(row["Division"]).strip()
+            bank_short = str(row["Bank Short Name"]).strip()
+            bank_full = str(row["Bank Full Name"]).strip() if pd.notna(row["Bank Full Name"]) else ""
+            account_name = str(row["Account Name"]).strip()
+            account_number = str(row["Account Number"]).strip()
+            currency = str(row["Currency"]).strip().upper()
+            raw_due_date = row["Due Date"]
+            due_date = (
+                raw_due_date.date()
+                if hasattr(raw_due_date, "date")
+                else pd.to_datetime(raw_due_date).date()
+            )
+            facility_type = str(row["Facility Type"]).strip()
+            amount = Decimal(str(row["Amount"]))
+            status = str(row["Status"]).strip().title() if pd.notna(row["Status"]) else "Active"
+            if not bu_name or not division_name or not bank_short or not account_number:
+                raise ValueError("Business Unit, Division, Bank Short Name and Account Number are all required.")
+        except (ValueError, InvalidOperation, TypeError) as e:
+            errors.append(schemas.ImportRowError(row_number=row_number, reason=f"Couldn't parse row: {e}"))
+            continue
+
+        if not db.query(models.Currency).get(currency):
+            errors.append(
+                schemas.ImportRowError(
+                    row_number=row_number,
+                    reason=f"Unknown currency code '{currency}' -- add it under Settings first.",
+                )
+            )
+            continue
+
+        bu = _get_or_create_bu(db, bu_name)
+        division = _get_or_create_division(db, division_name, bu.id)
+        bank = _get_or_create_bank(db, bank_short, bank_full)
+        account = _get_or_create_account(
+            db, bu.id, division.id, bank.id, account_name or account_number, account_number, currency
+        )
+
+        existing = (
+            db.query(models.BankDue)
+            .filter(
+                models.BankDue.account_id == account.id,
+                models.BankDue.due_date == due_date,
+                models.BankDue.facility_type == facility_type,
+            )
+            .first()
+        )
+        if existing:
+            existing.amount = amount
+            existing.status = status
+            updated += 1
+        else:
+            db.add(
+                models.BankDue(
+                    account_id=account.id,
+                    due_date=due_date,
+                    facility_type=facility_type,
+                    amount=amount,
+                    status=status,
+                )
+            )
+            imported += 1
+
+    db.commit()
+    return schemas.ImportResult(imported=imported, updated=updated, skipped=errors)

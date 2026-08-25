@@ -133,6 +133,10 @@ class BankDueOut(BaseModel):
     facility_type: Optional[str]
     amount: Decimal
     status: str
+    business_unit_name: Optional[str] = None
+    division_name: Optional[str] = None
+    bank_short_name: Optional[str] = None
+    account_number: Optional[str] = None
 
 
 class BankDueCreate(BaseModel):
@@ -164,6 +168,17 @@ class HomeSummary(BaseModel):
     status: str  # "covered" | "shortfall" | "no_data"
     unconverted_account_count: int
     notes: Optional[str] = None
+
+
+class ImportRowError(BaseModel):
+    row_number: int
+    reason: str
+
+
+class ImportResult(BaseModel):
+    imported: int
+    updated: int
+    skipped: list[ImportRowError]
 
 
 class CoverBreakdownRow(BaseModel):
