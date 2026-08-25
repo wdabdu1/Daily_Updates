@@ -50,11 +50,23 @@ def _table_columns(inspector, table_name):
 
 
 def prepare_legacy_rename(engine: Engine) -> bool:
-    """MUST run before Base.metadata.create_all(). If the old, incompatible
-    'master_accounts' table is present, rename it out of the way so
-    create_all can build the new-shaped table under that name. Returns True
-    if a rename happened (i.e. legacy schema is present at all)."""
+    """MUST run before Base.metadata.create_all(). Handles every case where
+    an old-app table shares its name with a new-shaped table, since
+    create_all() only creates missing tables -- it never alters an existing
+    one's columns. Two cases:
+
+      1. 'master_accounts' shape is fundamentally incompatible (free-text
+         bu/department vs FK columns) -- renamed out of the way so
+         create_all can build the new-shaped table fresh under that name.
+      2. 'users' is almost the same shape, just missing the new
+         'created_at' column -- patched in place with ALTER TABLE rather
+         than renamed, since everything else about it (including its data)
+         is directly reusable.
+
+    Returns True if any legacy schema was detected at all (drives whether
+    run_legacy_migration() has real migration work to do afterwards)."""
     inspector = inspect(engine)
+
     master_accounts_cols = _table_columns(inspector, "master_accounts")
     is_legacy_master_accounts = master_accounts_cols is not None and (
         "business_unit_id" not in master_accounts_cols
@@ -62,7 +74,20 @@ def prepare_legacy_rename(engine: Engine) -> bool:
     if is_legacy_master_accounts:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE master_accounts RENAME TO master_accounts_legacy"))
-    return is_legacy_master_accounts or "bus" in inspector.get_table_names()
+
+    user_cols = _table_columns(inspector, "users")
+    is_legacy_users = user_cols is not None and "created_at" not in user_cols
+    if is_legacy_users:
+        with engine.begin() as conn:
+            # Postgres and SQLite both accept this form (no IF NOT EXISTS
+            # needed since we already confirmed the column is absent).
+            conn.execute(text("ALTER TABLE users ADD COLUMN created_at TIMESTAMP"))
+
+    return (
+        is_legacy_master_accounts
+        or is_legacy_users
+        or "bus" in inspector.get_table_names()
+    )
 
 
 def run_legacy_migration(engine: Engine, legacy_present: bool) -> list[str]:
@@ -180,6 +205,16 @@ def run_legacy_migration(engine: Engine, legacy_present: bool) -> list[str]:
                 acc_name,
                 currency,
             ) in old_accounts:
+                # master_accounts_legacy is kept around permanently (not
+                # dropped, by design -- see module docstring), which means
+                # this loop runs again on every future restart too. Skip
+                # rows already migrated so restarts stay idempotent instead
+                # of hitting a duplicate primary key.
+                already = conn.execute(
+                    text("SELECT 1 FROM master_accounts WHERE id = :id"), {"id": old_id}
+                ).fetchone()
+                if already:
+                    continue
                 bu_id = get_or_create_bu(bu_name)
                 div_id = get_or_create_division(dept, bu_id)
                 bank_row = conn.execute(
