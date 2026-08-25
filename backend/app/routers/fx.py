@@ -191,9 +191,17 @@ def fx_import(
         row_number = idx + 2  # header is row 1, pandas is 0-indexed
         try:
             raw_date = row["Date"]
-            rate_date = (
-                raw_date.date() if hasattr(raw_date, "date") else pd.to_datetime(raw_date).date()
-            )
+            try:
+                rate_date = (
+                    raw_date.date() if hasattr(raw_date, "date") else pd.to_datetime(raw_date).date()
+                )
+            except Exception:
+                raise ValueError(
+                    f"'{raw_date}' in the Date column isn't a valid calendar date -- this usually"
+                    " happens when a date column is stored as text and Excel's fill-handle just"
+                    " increments the trailing number (e.g. ...-08-31 becomes ...-08-32 instead of"
+                    " rolling over to September). Format the column as a real Date and re-enter it."
+                )
             base = str(row["Base Currency"]).strip().upper()
             quote = str(row["Quote Currency"]).strip().upper()
             rate_type = _normalize_rate_type(row["Rate Type"])
@@ -220,17 +228,32 @@ def fx_import(
             )
             continue
 
+        # Each DB write below runs inside its own SAVEPOINT (nested
+        # transaction). Without this, a DB-level failure on one row (e.g. a
+        # constraint we didn't anticipate) leaves the whole session unusable
+        # for every row after it, and the entire import fails with an opaque
+        # 500 instead of a clear per-row skip reason.
         cache_key = (base, quote)
         pair = pair_cache.get(cache_key) or get_pair(db, base, quote)
         if not pair:
-            pair = models.CurrencyPair(
-                base_currency=base,
-                quote_currency=quote,
-                supports_extended_rates="SDG" in (base, quote),
-                is_default=False,
-            )
-            db.add(pair)
-            db.flush()
+            try:
+                with db.begin_nested():
+                    pair = models.CurrencyPair(
+                        base_currency=base,
+                        quote_currency=quote,
+                        supports_extended_rates="SDG" in (base, quote),
+                        is_default=False,
+                    )
+                    db.add(pair)
+                    db.flush()
+            except Exception as e:
+                errors.append(
+                    schemas.ImportRowError(
+                        row_number=row_number,
+                        reason=f"Couldn't create currency pair {base}/{quote}: {e}",
+                    )
+                )
+                continue
         pair_cache[cache_key] = pair
 
         allowed_types = SDG_RATE_TYPES if pair.supports_extended_rates else NON_SDG_RATE_TYPES
@@ -243,29 +266,41 @@ def fx_import(
             )
             continue
 
-        existing = (
-            db.query(models.FxRate)
-            .filter(
-                models.FxRate.rate_date == rate_date,
-                models.FxRate.currency_pair_id == pair.id,
-                models.FxRate.rate_type == rate_type,
+        try:
+            with db.begin_nested():
+                existing = (
+                    db.query(models.FxRate)
+                    .filter(
+                        models.FxRate.rate_date == rate_date,
+                        models.FxRate.currency_pair_id == pair.id,
+                        models.FxRate.rate_type == rate_type,
+                    )
+                    .first()
+                )
+                if existing:
+                    existing.rate = rate
+                    existing.is_manual_entry = True
+                    row_was_update = True
+                else:
+                    db.add(
+                        models.FxRate(
+                            rate_date=rate_date,
+                            currency_pair_id=pair.id,
+                            rate_type=rate_type,
+                            rate=rate,
+                            is_manual_entry=True,
+                        )
+                    )
+                    row_was_update = False
+        except Exception as e:
+            errors.append(
+                schemas.ImportRowError(row_number=row_number, reason=f"Couldn't save row: {e}")
             )
-            .first()
-        )
-        if existing:
-            existing.rate = rate
-            existing.is_manual_entry = True
+            continue
+
+        if row_was_update:
             updated += 1
         else:
-            db.add(
-                models.FxRate(
-                    rate_date=rate_date,
-                    currency_pair_id=pair.id,
-                    rate_type=rate_type,
-                    rate=rate,
-                    is_manual_entry=True,
-                )
-            )
             imported += 1
 
     db.commit()

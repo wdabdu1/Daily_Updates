@@ -69,7 +69,14 @@ function DuesSection() {
       setFile(null);
       refresh();
     } catch (e: any) {
-      setImportError(e?.response?.data?.detail || "Import failed.");
+      const detail = e?.response?.data?.detail;
+      setImportError(
+        typeof detail === "string" && detail
+          ? detail
+          : detail
+          ? JSON.stringify(detail)
+          : "Import failed -- the server didn't say why. Try again, and if it keeps happening, send this file over."
+      );
     } finally {
       setImporting(false);
     }

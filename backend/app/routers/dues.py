@@ -232,11 +232,19 @@ def dues_import(
             account_number = str(row["Account Number"]).strip()
             currency = str(row["Currency"]).strip().upper()
             raw_due_date = row["Due Date"]
-            due_date = (
-                raw_due_date.date()
-                if hasattr(raw_due_date, "date")
-                else pd.to_datetime(raw_due_date).date()
-            )
+            try:
+                due_date = (
+                    raw_due_date.date()
+                    if hasattr(raw_due_date, "date")
+                    else pd.to_datetime(raw_due_date).date()
+                )
+            except Exception:
+                raise ValueError(
+                    f"'{raw_due_date}' in the Due Date column isn't a valid calendar date -- this"
+                    " usually happens when a date column is stored as text and Excel's fill-handle"
+                    " just increments the trailing number (e.g. ...-08-31 becomes ...-08-32 instead"
+                    " of rolling over to September). Format the column as a real Date and re-enter it."
+                )
             facility_type = str(row["Facility Type"]).strip()
             amount = parse_decimal(row["Amount"])
             status = str(row["Status"]).strip().title() if pd.notna(row["Status"]) else "Active"
@@ -255,36 +263,53 @@ def dues_import(
             )
             continue
 
-        bu = _get_or_create_bu(db, bu_name)
-        division = _get_or_create_division(db, division_name, bu.id)
-        bank = _get_or_create_bank(db, bank_short, bank_full)
-        account = _get_or_create_account(
-            db, bu.id, division.id, bank.id, account_name or account_number, account_number, currency
-        )
+        # Each row's writes run inside their own SAVEPOINT (nested transaction).
+        # Without this, a DB-level failure on one row (e.g. a constraint we
+        # didn't anticipate) leaves the whole session unusable for every row
+        # after it, and the entire import fails with an opaque 500 instead of
+        # a clear per-row skip reason.
+        try:
+            with db.begin_nested():
+                bu = _get_or_create_bu(db, bu_name)
+                division = _get_or_create_division(db, division_name, bu.id)
+                bank = _get_or_create_bank(db, bank_short, bank_full)
+                account = _get_or_create_account(
+                    db, bu.id, division.id, bank.id, account_name or account_number, account_number, currency
+                )
 
-        existing = (
-            db.query(models.BankDue)
-            .filter(
-                models.BankDue.account_id == account.id,
-                models.BankDue.due_date == due_date,
-                models.BankDue.facility_type == facility_type,
+                existing = (
+                    db.query(models.BankDue)
+                    .filter(
+                        models.BankDue.account_id == account.id,
+                        models.BankDue.due_date == due_date,
+                        models.BankDue.facility_type == facility_type,
+                    )
+                    .first()
+                )
+                if existing:
+                    existing.amount = amount
+                    existing.status = status
+                    row_was_update = True
+                else:
+                    db.add(
+                        models.BankDue(
+                            account_id=account.id,
+                            due_date=due_date,
+                            facility_type=facility_type,
+                            amount=amount,
+                            status=status,
+                        )
+                    )
+                    row_was_update = False
+        except Exception as e:
+            errors.append(
+                schemas.ImportRowError(row_number=row_number, reason=f"Couldn't save row: {e}")
             )
-            .first()
-        )
-        if existing:
-            existing.amount = amount
-            existing.status = status
+            continue
+
+        if row_was_update:
             updated += 1
         else:
-            db.add(
-                models.BankDue(
-                    account_id=account.id,
-                    due_date=due_date,
-                    facility_type=facility_type,
-                    amount=amount,
-                    status=status,
-                )
-            )
             imported += 1
 
     db.commit()

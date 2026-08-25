@@ -260,6 +260,36 @@ def run_legacy_migration(engine: Engine, legacy_present: bool) -> list[str]:
                 " 'master_accounts_legacy')."
             )
 
+            # The INSERT above supplies an explicit `id` (old_id) so that
+            # bank_dues.account_id / receivables_daily.account_id keep
+            # resolving correctly across the migration. On Postgres, an
+            # explicit-value insert into a SERIAL/IDENTITY column does NOT
+            # advance that column's underlying sequence -- so after this
+            # loop, the sequence is still sitting at its untouched starting
+            # position while the table already contains rows with ids up to
+            # max(old_id). The very next auto-generated insert (e.g. a brand
+            # new account created by the Bank Dues Excel import, or by
+            # anything else that adds a MasterAccount through the ORM)
+            # collides with an already-migrated row and crashes with
+            # "duplicate key value violates unique constraint" -- which is
+            # exactly the failure mode a user hits the first time they
+            # import a due for an account that doesn't exist yet. Re-sync
+            # the sequence to max(id)+1 so new rows get fresh ids.
+            # (SQLite's INTEGER PRIMARY KEY isn't sequence-based -- it just
+            # uses max(rowid)+1 automatically -- so this is a Postgres-only
+            # fix and a no-op everywhere else.)
+            if engine.dialect.name == "postgresql":
+                conn.execute(
+                    text(
+                        "SELECT setval(pg_get_serial_sequence('master_accounts', 'id'),"
+                        " COALESCE((SELECT MAX(id) FROM master_accounts), 1))"
+                    )
+                )
+                report.append(
+                    "Re-synced the master_accounts ID sequence after migration"
+                    " (fixes 'duplicate key' crashes when creating new accounts)."
+                )
+
         # ---- 5. Exchange rates: exchange_rates -> fx_rates -------------
         if "exchange_rates" in inspector.get_table_names() and "fx_rates" in inspector.get_table_names():
             old_rates = conn.execute(

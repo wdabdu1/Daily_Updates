@@ -51,6 +51,8 @@ On startup, the app inspects the database. If it finds the *old* app's tables, i
 
 One migration caveat: existing user passwords were unsalted SHA256 and can't be converted to the new bcrypt scheme, so any migrated user's password is reset to the bootstrap default (`admin`/`admin123` unless you changed `DEFAULT_ADMIN_PASSWORD`) instead of being left unusable. **Change this immediately after logging in** — everyone migrated currently shares the same known password, and there's no self-service password change yet (planned for the full Settings page).
 
+Another migration fix worth knowing about: your old accounts were carried over with their original IDs so existing dues/receivables kept pointing at the right account. On Postgres, that meant the database's internal "next ID" counter for new accounts wasn't updated to account for that — so the very first *new* account created afterwards (e.g. from typing a Business Unit/Division that isn't in the system yet during a Bank Dues import) could collide with an already-migrated one and fail. This deploy fixes that counter automatically on startup; nothing you need to do.
+
 ## Fixed from the old app
 - The old app reset the `admin` password to `admin123` on *every* restart/deploy, silently reverting any password change in production. The new app only resets a password when the migrated hash genuinely can't be verified (not bcrypt-shaped) — a real password, once set, survives restarts.
 - Passwords are now bcrypt-hashed instead of unsalted SHA256.
@@ -63,6 +65,7 @@ Both the **FX** and **Bank Dues** pages have a "Download Template" button (an .x
 - **Bank Dues import**: rows carry the full account chain (Business Unit / Division / Bank Short Name / Bank Full Name / Account Name / Account Number / Currency) plus the due itself (Due Date / Facility Type / Amount / Status). Any Business Unit, Division, Bank, or Account referenced that doesn't exist yet is created automatically from the row — you don't need to set these up first. Re-uploading the same account + due date + facility type updates the amount/status instead of duplicating.
 - **Today's Receivables**: not an Excel import — it's an interactive workflow on the Bank Dues page ("Start Update"), since it's meant to be a quick daily habit: every account shows up prefilled with its last recorded amount, you adjust what changed, and save. This is what feeds the Home page's coverage comparison, so you'll want to use it (or at least save it once) alongside uploading dues to see meaningful Home/Analysis results.
 - Number columns (**Rate**, **Amount**) accept plain numbers or thousands-separator-formatted ones — `3610`, `3,610`, and `3,610.00` all work. Just don't include a currency symbol.
+- Date columns (**Date**, **Due Date**): if you extend a template by selecting a date cell and dragging Excel's fill handle down, make sure that column is formatted as an actual **Date** (not stored as text) first — Excel only rolls a real date correctly from month to month (Aug 31 → Sep 1). If the column is text, the fill handle just increments the trailing number and produces invalid dates like `2026-08-32`, which the import will reject with a clear per-row error rather than guessing what you meant.
 
 ## Wiping test data
 
