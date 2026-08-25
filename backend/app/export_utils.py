@@ -1,7 +1,43 @@
 import io
+import math
+from decimal import Decimal, InvalidOperation
 
 import pandas as pd
 from fastapi.responses import StreamingResponse
+
+
+def parse_decimal(raw) -> Decimal:
+    """Parse a number coming out of an uploaded spreadsheet cell.
+
+    Excel/pandas can hand us this as an actual int/float, or as a string --
+    and a string may carry thousands separators (e.g. "3,610.00", which is
+    exactly the format this app's own live-entry fields produce) or stray
+    currency symbols/whitespace a user pasted in. Decimal(str(x)) chokes on
+    any of that with a bare "ConversionSyntax" error, so normalize first.
+    """
+    if raw is None:
+        raise InvalidOperation("value is empty")
+    if isinstance(raw, float) and math.isnan(raw):
+        raise InvalidOperation("value is empty")
+    if isinstance(raw, (int, float)):
+        return Decimal(str(raw))
+
+    s = str(raw).strip()
+    if not s or s.lower() in ("nan", "none"):
+        raise InvalidOperation("value is empty")
+
+    negative = s.startswith("(") and s.endswith(")")
+    if negative:
+        s = s[1:-1]
+    s = s.replace(",", "").replace("$", "").strip()
+    if s.startswith("-"):
+        negative = True
+        s = s[1:]
+    if not s:
+        raise InvalidOperation("value is empty")
+
+    value = Decimal(s)
+    return -value if negative else value
 
 
 def xlsx_response(rows: list[dict], filename: str) -> StreamingResponse:

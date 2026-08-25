@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import InvalidOperation
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
@@ -9,7 +9,7 @@ from .. import models, schemas
 from ..auth import get_current_user, require_write
 from ..config import NON_SDG_RATE_TYPES, SDG_RATE_TYPES
 from ..database import get_db
-from ..export_utils import read_uploaded_xlsx, xlsx_response, xlsx_template_response
+from ..export_utils import parse_decimal, read_uploaded_xlsx, xlsx_response, xlsx_template_response
 from ..rates import build_daily_series, get_pair
 
 router = APIRouter(prefix="/api/fx", tags=["fx"])
@@ -157,7 +157,8 @@ def fx_import_template(_u: models.User = Depends(get_current_user)):
         " that rate (replaces the value) rather than creating a duplicate. This is how you"
         " correct a mistake or replace test data with final figures -- just re-upload with the"
         " corrected value.",
-        "Rate is a plain number, e.g. 982.00 -- no currency symbols or thousands separators.",
+        "Rate is a number, e.g. 982.00 or 3,610.00 -- thousands-separator commas are fine, just"
+        " don't include a currency symbol.",
     ]
     return xlsx_template_response(FX_TEMPLATE_COLUMNS, example_rows, notes, "fx_rates_template.xlsx")
 
@@ -196,7 +197,7 @@ def fx_import(
             base = str(row["Base Currency"]).strip().upper()
             quote = str(row["Quote Currency"]).strip().upper()
             rate_type = _normalize_rate_type(row["Rate Type"])
-            rate = Decimal(str(row["Rate"]))
+            rate = parse_decimal(row["Rate"])
         except (ValueError, InvalidOperation, TypeError) as e:
             errors.append(schemas.ImportRowError(row_number=row_number, reason=f"Couldn't parse row: {e}"))
             continue

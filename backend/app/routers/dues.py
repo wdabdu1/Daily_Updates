@@ -1,4 +1,4 @@
-from decimal import Decimal, InvalidOperation
+from decimal import InvalidOperation
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import models, schemas
 from ..auth import get_current_user, require_write
 from ..database import get_db
-from ..export_utils import read_uploaded_xlsx, xlsx_response, xlsx_template_response
+from ..export_utils import parse_decimal, read_uploaded_xlsx, xlsx_response, xlsx_template_response
 
 router = APIRouter(prefix="/api/dues", tags=["dues"])
 
@@ -128,8 +128,8 @@ def dues_import_template(_u: models.User = Depends(get_current_user)):
         " creating a duplicate -- this is how you correct test data or replace it with final"
         " figures by re-uploading.",
         "Due Date must be YYYY-MM-DD (or any format Excel stores as a real date).",
-        "Status should be 'Active' or 'Settled'. Amount is a plain number, no currency symbols"
-        " or thousands separators.",
+        "Status should be 'Active' or 'Settled'. Amount is a number, e.g. 300000 or 300,000.00 --"
+        " thousands-separator commas are fine, just don't include a currency symbol.",
     ]
     return xlsx_template_response(
         DUES_TEMPLATE_COLUMNS, example_rows, notes, "bank_dues_template.xlsx"
@@ -238,7 +238,7 @@ def dues_import(
                 else pd.to_datetime(raw_due_date).date()
             )
             facility_type = str(row["Facility Type"]).strip()
-            amount = Decimal(str(row["Amount"]))
+            amount = parse_decimal(row["Amount"])
             status = str(row["Status"]).strip().title() if pd.notna(row["Status"]) else "Active"
             if not bu_name or not division_name or not bank_short or not account_number:
                 raise ValueError("Business Unit, Division, Bank Short Name and Account Number are all required.")
