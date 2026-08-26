@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 
 interface BusinessUnit {
   id: number;
@@ -30,6 +31,18 @@ interface AppUser {
   username: string;
   role: string;
 }
+interface Account {
+  id: number;
+  business_unit_id: number | null;
+  division_id: number | null;
+  bank_id: number;
+  account_name: string;
+  account_number: string;
+  currency: string;
+  business_unit_name: string | null;
+  division_name: string | null;
+  bank_short_name: string | null;
+}
 
 function errMsg(e: any, fallback: string) {
   const detail = e?.response?.data?.detail;
@@ -42,6 +55,8 @@ function BusinessUnitsSection({ onChange }: { onChange: () => void }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
 
   function refresh() {
     api.get<BusinessUnit[]>("/api/settings/business-units").then((res) => setItems(res.data));
@@ -64,6 +79,40 @@ function BusinessUnitsSection({ onChange }: { onChange: () => void }) {
     }
   }
 
+  function startEdit(b: BusinessUnit) {
+    setEditingId(b.id);
+    setEditName(b.name);
+    setError(null);
+  }
+
+  async function saveEdit(id: number) {
+    if (!editName.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.put(`/api/settings/business-units/${id}`, { name: editName.trim() });
+      setEditingId(null);
+      refresh();
+      onChange();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't update this business unit."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(b: BusinessUnit) {
+    if (!window.confirm(`Delete business unit "${b.name}"?`)) return;
+    setError(null);
+    try {
+      await api.delete(`/api/settings/business-units/${b.id}`);
+      refresh();
+      onChange();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't delete this business unit."));
+    }
+  }
+
   return (
     <div className="card">
       <h2 className="section-title">Business Units</h2>
@@ -71,17 +120,48 @@ function BusinessUnitsSection({ onChange }: { onChange: () => void }) {
         <thead>
           <tr>
             <th>Name</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
-          {items.map((b) => (
-            <tr key={b.id}>
-              <td>{b.name}</td>
-            </tr>
-          ))}
+          {items.map((b) =>
+            editingId === b.id ? (
+              <tr key={b.id}>
+                <td>
+                  <input value={editName} onChange={(e) => setEditName(e.target.value)} />
+                </td>
+                <td>
+                  <div className="row-actions">
+                    <button className="btn btn--small" onClick={() => saveEdit(b.id)} disabled={busy}>
+                      Save
+                    </button>
+                    <button className="btn btn--small" onClick={() => setEditingId(null)} disabled={busy}>
+                      Cancel
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              <tr key={b.id}>
+                <td>{b.name}</td>
+                <td>
+                  <div className="row-actions">
+                    <button className="btn btn--ghost btn--small" onClick={() => startEdit(b)}>
+                      Edit
+                    </button>
+                    <button className="btn btn--danger btn--small" onClick={() => remove(b)}>
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )
+          )}
           {items.length === 0 && (
             <tr>
-              <td className="muted">No business units yet.</td>
+              <td className="muted" colSpan={2}>
+                No business units yet.
+              </td>
             </tr>
           )}
         </tbody>
@@ -113,6 +193,9 @@ function DivisionsSection({
   const [buId, setBuId] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editBuId, setEditBuId] = useState<string>("");
 
   function refresh() {
     api.get<Division[]>("/api/settings/divisions").then((res) => setItems(res.data));
@@ -138,6 +221,44 @@ function DivisionsSection({
     }
   }
 
+  function startEdit(d: Division) {
+    setEditingId(d.id);
+    setEditName(d.name);
+    setEditBuId(String(d.business_unit_id));
+    setError(null);
+  }
+
+  async function saveEdit(id: number) {
+    if (!editName.trim() || !editBuId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.put(`/api/settings/divisions/${id}`, {
+        name: editName.trim(),
+        business_unit_id: Number(editBuId),
+      });
+      setEditingId(null);
+      refresh();
+      onChange();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't update this division."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(d: Division) {
+    if (!window.confirm(`Delete division "${d.name}"?`)) return;
+    setError(null);
+    try {
+      await api.delete(`/api/settings/divisions/${d.id}`);
+      refresh();
+      onChange();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't delete this division."));
+    }
+  }
+
   const buName = (id: number) => businessUnits.find((b) => b.id === id)?.name || `#${id}`;
 
   return (
@@ -148,18 +269,56 @@ function DivisionsSection({
           <tr>
             <th>Name</th>
             <th>Business Unit</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
-          {items.map((d) => (
-            <tr key={d.id}>
-              <td>{d.name}</td>
-              <td>{buName(d.business_unit_id)}</td>
-            </tr>
-          ))}
+          {items.map((d) =>
+            editingId === d.id ? (
+              <tr key={d.id}>
+                <td>
+                  <input value={editName} onChange={(e) => setEditName(e.target.value)} />
+                </td>
+                <td>
+                  <select value={editBuId} onChange={(e) => setEditBuId(e.target.value)}>
+                    {businessUnits.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  <div className="row-actions">
+                    <button className="btn btn--small" onClick={() => saveEdit(d.id)} disabled={busy}>
+                      Save
+                    </button>
+                    <button className="btn btn--small" onClick={() => setEditingId(null)} disabled={busy}>
+                      Cancel
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              <tr key={d.id}>
+                <td>{d.name}</td>
+                <td>{buName(d.business_unit_id)}</td>
+                <td>
+                  <div className="row-actions">
+                    <button className="btn btn--ghost btn--small" onClick={() => startEdit(d)}>
+                      Edit
+                    </button>
+                    <button className="btn btn--danger btn--small" onClick={() => remove(d)}>
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )
+          )}
           {items.length === 0 && (
             <tr>
-              <td className="muted" colSpan={2}>
+              <td className="muted" colSpan={3}>
                 No divisions yet.
               </td>
             </tr>
@@ -202,6 +361,9 @@ function BanksSection({ onChange }: { onChange: () => void }) {
   const [fullName, setFullName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editShort, setEditShort] = useState("");
+  const [editFull, setEditFull] = useState("");
 
   function refresh() {
     api.get<Bank[]>("/api/settings/banks").then((res) => setItems(res.data));
@@ -225,6 +387,44 @@ function BanksSection({ onChange }: { onChange: () => void }) {
     }
   }
 
+  function startEdit(b: Bank) {
+    setEditingId(b.id);
+    setEditShort(b.short_name);
+    setEditFull(b.full_name);
+    setError(null);
+  }
+
+  async function saveEdit(id: number) {
+    if (!editShort.trim() || !editFull.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.put(`/api/settings/banks/${id}`, {
+        short_name: editShort.trim(),
+        full_name: editFull.trim(),
+      });
+      setEditingId(null);
+      refresh();
+      onChange();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't update this bank."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(b: Bank) {
+    if (!window.confirm(`Delete bank "${b.short_name}"?`)) return;
+    setError(null);
+    try {
+      await api.delete(`/api/settings/banks/${b.id}`);
+      refresh();
+      onChange();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't delete this bank."));
+    }
+  }
+
   return (
     <div className="card">
       <h2 className="section-title">Banks</h2>
@@ -233,18 +433,50 @@ function BanksSection({ onChange }: { onChange: () => void }) {
           <tr>
             <th>Short Name</th>
             <th>Full Name</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
-          {items.map((b) => (
-            <tr key={b.id}>
-              <td>{b.short_name}</td>
-              <td>{b.full_name}</td>
-            </tr>
-          ))}
+          {items.map((b) =>
+            editingId === b.id ? (
+              <tr key={b.id}>
+                <td>
+                  <input value={editShort} onChange={(e) => setEditShort(e.target.value)} />
+                </td>
+                <td>
+                  <input value={editFull} onChange={(e) => setEditFull(e.target.value)} />
+                </td>
+                <td>
+                  <div className="row-actions">
+                    <button className="btn btn--small" onClick={() => saveEdit(b.id)} disabled={busy}>
+                      Save
+                    </button>
+                    <button className="btn btn--small" onClick={() => setEditingId(null)} disabled={busy}>
+                      Cancel
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              <tr key={b.id}>
+                <td>{b.short_name}</td>
+                <td>{b.full_name}</td>
+                <td>
+                  <div className="row-actions">
+                    <button className="btn btn--ghost btn--small" onClick={() => startEdit(b)}>
+                      Edit
+                    </button>
+                    <button className="btn btn--danger btn--small" onClick={() => remove(b)}>
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )
+          )}
           {items.length === 0 && (
             <tr>
-              <td className="muted" colSpan={2}>
+              <td className="muted" colSpan={3}>
                 No banks yet.
               </td>
             </tr>
@@ -301,13 +533,41 @@ function CurrenciesSection({ onChange }: { onChange: () => void }) {
     }
   }
 
+  async function remove(c: Currency) {
+    if (!window.confirm(`Delete currency "${c.code}"?`)) return;
+    setError(null);
+    try {
+      await api.delete(`/api/settings/currencies/${c.code}`);
+      refresh();
+      onChange();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't delete this currency."));
+    }
+  }
+
   return (
     <div className="card">
       <h2 className="section-title">Currencies</h2>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "1rem" }}>
         {items.map((c) => (
-          <span key={c.code} className="badge">
+          <span key={c.code} className="badge" style={{ paddingRight: "0.4rem" }}>
             {c.code}
+            <button
+              onClick={() => remove(c)}
+              title={`Delete ${c.code}`}
+              style={{
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                color: "inherit",
+                fontWeight: 700,
+                padding: 0,
+                marginLeft: "0.15rem",
+                lineHeight: 1,
+              }}
+            >
+              &times;
+            </button>
           </span>
         ))}
         {items.length === 0 && <span className="muted">No currencies yet.</span>}
@@ -333,7 +593,7 @@ function CurrenciesSection({ onChange }: { onChange: () => void }) {
 }
 
 // -------------------------------------------------------------- Currency Pairs
-function CurrencyPairsSection({ currencies }: { currencies: Currency[] }) {
+function CurrencyPairsSection({ currencies, onChange }: { currencies: Currency[]; onChange: () => void }) {
   const [items, setItems] = useState<CurrencyPair[]>([]);
   const [base, setBase] = useState("");
   const [quote, setQuote] = useState("");
@@ -358,10 +618,23 @@ function CurrencyPairsSection({ currencies }: { currencies: Currency[] }) {
     try {
       await api.post("/api/settings/currency-pairs", { base_currency: base, quote_currency: quote });
       refresh();
+      onChange();
     } catch (e: any) {
       setError(errMsg(e, "Couldn't add this currency pair."));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function remove(p: CurrencyPair) {
+    if (!window.confirm(`Delete currency pair ${p.base_currency}/${p.quote_currency}?`)) return;
+    setError(null);
+    try {
+      await api.delete(`/api/settings/currency-pairs/${p.id}`);
+      refresh();
+      onChange();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't delete this currency pair."));
     }
   }
 
@@ -377,6 +650,7 @@ function CurrencyPairsSection({ currencies }: { currencies: Currency[] }) {
           <tr>
             <th>Pair</th>
             <th>Rate types</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -387,11 +661,16 @@ function CurrencyPairsSection({ currencies }: { currencies: Currency[] }) {
                 {p.is_default ? " (default)" : ""}
               </td>
               <td>{p.supports_extended_rates ? "Market, CBOS, Pricing" : "Market"}</td>
+              <td>
+                <button className="btn btn--danger btn--small" onClick={() => remove(p)}>
+                  Delete
+                </button>
+              </td>
             </tr>
           ))}
           {items.length === 0 && (
             <tr>
-              <td className="muted" colSpan={2}>
+              <td className="muted" colSpan={3}>
                 No currency pairs yet.
               </td>
             </tr>
@@ -433,8 +712,287 @@ function CurrencyPairsSection({ currencies }: { currencies: Currency[] }) {
   );
 }
 
+// ---------------------------------------------------------------------- Accounts
+function AccountsSection({
+  businessUnits,
+  divisions,
+  banks,
+  currencies,
+}: {
+  businessUnits: BusinessUnit[];
+  divisions: Division[];
+  banks: Bank[];
+  currencies: Currency[];
+}) {
+  const emptyDraft = {
+    business_unit_id: "" as string,
+    division_id: "" as string,
+    bank_id: "" as string,
+    account_name: "",
+    account_number: "",
+    currency: "",
+  };
+  const [items, setItems] = useState<Account[]>([]);
+  const [draft, setDraft] = useState(emptyDraft);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState(emptyDraft);
+
+  function refresh() {
+    api.get<Account[]>("/api/accounts").then((res) => setItems(res.data));
+  }
+  useEffect(refresh, []);
+  useEffect(() => {
+    if (!draft.bank_id && banks.length > 0) setDraft((d) => ({ ...d, bank_id: String(banks[0].id) }));
+    if (!draft.currency && currencies.length > 0)
+      setDraft((d) => ({ ...d, currency: currencies.find((c) => c.code === "SDG")?.code || currencies[0].code }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [banks, currencies]);
+
+  function divisionsFor(buId: string) {
+    if (!buId) return [];
+    return divisions.filter((d) => d.business_unit_id === Number(buId));
+  }
+
+  function toPayload(d: typeof emptyDraft) {
+    return {
+      business_unit_id: d.business_unit_id ? Number(d.business_unit_id) : null,
+      division_id: d.division_id ? Number(d.division_id) : null,
+      bank_id: Number(d.bank_id),
+      account_name: d.account_name.trim(),
+      account_number: d.account_number.trim(),
+      currency: d.currency,
+    };
+  }
+
+  async function add() {
+    if (!draft.bank_id || !draft.account_name.trim() || !draft.account_number.trim() || !draft.currency) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/api/accounts", toPayload(draft));
+      setDraft({ ...emptyDraft, bank_id: draft.bank_id, currency: draft.currency });
+      refresh();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't add this account."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEdit(a: Account) {
+    setEditingId(a.id);
+    setEditDraft({
+      business_unit_id: a.business_unit_id ? String(a.business_unit_id) : "",
+      division_id: a.division_id ? String(a.division_id) : "",
+      bank_id: String(a.bank_id),
+      account_name: a.account_name,
+      account_number: a.account_number,
+      currency: a.currency,
+    });
+    setError(null);
+  }
+
+  async function saveEdit(id: number) {
+    if (!editDraft.bank_id || !editDraft.account_name.trim() || !editDraft.account_number.trim() || !editDraft.currency)
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.put(`/api/accounts/${id}`, toPayload(editDraft));
+      setEditingId(null);
+      refresh();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't update this account."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(a: Account) {
+    if (!window.confirm(`Delete account "${a.account_name}" (${a.account_number})?`)) return;
+    setError(null);
+    try {
+      await api.delete(`/api/accounts/${a.id}`);
+      refresh();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't delete this account."));
+    }
+  }
+
+  function DraftFields({
+    value,
+    onChange,
+  }: {
+    value: typeof emptyDraft;
+    onChange: (v: typeof emptyDraft) => void;
+  }) {
+    return (
+      <>
+        <div>
+          <label className="field-label">Business Unit</label>
+          <select
+            value={value.business_unit_id}
+            onChange={(e) => onChange({ ...value, business_unit_id: e.target.value, division_id: "" })}
+          >
+            <option value="">— none —</option>
+            {businessUnits.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="field-label">Division</label>
+          <select
+            value={value.division_id}
+            onChange={(e) => onChange({ ...value, division_id: e.target.value })}
+            disabled={!value.business_unit_id}
+          >
+            <option value="">— none —</option>
+            {divisionsFor(value.business_unit_id).map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="field-label">Bank</label>
+          <select value={value.bank_id} onChange={(e) => onChange({ ...value, bank_id: e.target.value })}>
+            {banks.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.short_name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="field-label">Account Name</label>
+          <input
+            value={value.account_name}
+            onChange={(e) => onChange({ ...value, account_name: e.target.value })}
+            placeholder="e.g. Treasury Main AED"
+          />
+        </div>
+        <div>
+          <label className="field-label">Account Number</label>
+          <input
+            value={value.account_number}
+            onChange={(e) => onChange({ ...value, account_number: e.target.value })}
+            placeholder="e.g. 1001-AED"
+          />
+        </div>
+        <div>
+          <label className="field-label">Currency</label>
+          <select value={value.currency} onChange={(e) => onChange({ ...value, currency: e.target.value })}>
+            {currencies.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.code}
+              </option>
+            ))}
+          </select>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="card">
+      <h2 className="section-title">Accounts</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Master accounts also get created automatically from a Bank Dues import -- use this to add
+        one directly, or to fix a typo/reassign one without re-uploading. Business Unit and
+        Division are optional (see Round 5 notes) if you don't have that attribution yet.
+      </p>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Business Unit</th>
+            <th>Division</th>
+            <th>Bank</th>
+            <th>Account Name</th>
+            <th>Account Number</th>
+            <th>Currency</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((a) =>
+            editingId === a.id ? (
+              <tr key={a.id}>
+                <td colSpan={6}>
+                  <div className="form-grid">
+                    <DraftFields value={editDraft} onChange={setEditDraft} />
+                  </div>
+                </td>
+                <td>
+                  <div className="row-actions">
+                    <button className="btn btn--small" onClick={() => saveEdit(a.id)} disabled={busy}>
+                      Save
+                    </button>
+                    <button className="btn btn--small" onClick={() => setEditingId(null)} disabled={busy}>
+                      Cancel
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              <tr key={a.id}>
+                <td>{a.business_unit_name || "Unassigned"}</td>
+                <td>{a.division_name || "—"}</td>
+                <td>{a.bank_short_name}</td>
+                <td>{a.account_name}</td>
+                <td>{a.account_number}</td>
+                <td>{a.currency}</td>
+                <td>
+                  <div className="row-actions">
+                    <button className="btn btn--ghost btn--small" onClick={() => startEdit(a)}>
+                      Edit
+                    </button>
+                    <button className="btn btn--danger btn--small" onClick={() => remove(a)}>
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )
+          )}
+          {items.length === 0 && (
+            <tr>
+              <td className="muted" colSpan={7}>
+                No accounts yet.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <div className="form-grid" style={{ marginTop: "1rem" }}>
+        <DraftFields value={draft} onChange={setDraft} />
+      </div>
+      <button
+        className="btn btn--primary"
+        style={{ marginTop: "0.75rem" }}
+        disabled={!draft.bank_id || !draft.account_name.trim() || !draft.account_number.trim() || !draft.currency || busy}
+        onClick={add}
+      >
+        {busy ? "Adding..." : "Add account"}
+      </button>
+      {banks.length === 0 && (
+        <p className="muted" style={{ marginTop: "0.5rem" }}>
+          Add a Bank above first.
+        </p>
+      )}
+      {error && <p className="error-text">{error}</p>}
+    </div>
+  );
+}
+
 // ----------------------------------------------------------------------- Users
 function UsersSection() {
+  const { username: myUsername } = useAuth();
   const [items, setItems] = useState<AppUser[]>([]);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -444,6 +1002,9 @@ function UsersSection() {
   const [resetting, setResetting] = useState<number | null>(null);
   const [resetPw, setResetPw] = useState("");
   const [resetMsg, setResetMsg] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editUsername, setEditUsername] = useState("");
+  const [editRole, setEditRole] = useState("ReadWrite");
 
   function refresh() {
     api.get<AppUser[]>("/api/settings/users").then((res) => setItems(res.data));
@@ -480,6 +1041,39 @@ function UsersSection() {
     }
   }
 
+  function startEdit(u: AppUser) {
+    setEditingId(u.id);
+    setEditUsername(u.username);
+    setEditRole(u.role);
+    setError(null);
+  }
+
+  async function saveEdit(id: number) {
+    if (!editUsername.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.put(`/api/settings/users/${id}`, { username: editUsername.trim(), role: editRole });
+      setEditingId(null);
+      refresh();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't update this user."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(u: AppUser) {
+    if (!window.confirm(`Delete user "${u.username}"?`)) return;
+    setError(null);
+    try {
+      await api.delete(`/api/settings/users/${u.id}`);
+      refresh();
+    } catch (e: any) {
+      setError(errMsg(e, "Couldn't delete this user."));
+    }
+  }
+
   return (
     <div className="card">
       <h2 className="section-title">Users</h2>
@@ -498,44 +1092,84 @@ function UsersSection() {
         <tbody>
           {items.map((u) => (
             <tr key={u.id}>
-              <td>{u.username}</td>
-              <td>{u.role}</td>
-              <td>
-                {resetting === u.id ? (
-                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                    <input
-                      type="password"
-                      placeholder="New password"
-                      value={resetPw}
-                      onChange={(e) => setResetPw(e.target.value)}
-                      style={{ width: 160 }}
-                    />
-                    <button className="btn" onClick={() => doReset(u.id)} disabled={!resetPw}>
-                      Save
-                    </button>
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        setResetting(null);
-                        setResetPw("");
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      setResetting(u.id);
-                      setResetPw("");
-                      setResetMsg(null);
-                    }}
-                  >
-                    Reset password
-                  </button>
-                )}
-              </td>
+              {editingId === u.id ? (
+                <>
+                  <td>
+                    <input value={editUsername} onChange={(e) => setEditUsername(e.target.value)} />
+                  </td>
+                  <td>
+                    <select value={editRole} onChange={(e) => setEditRole(e.target.value)}>
+                      <option value="Manager">Manager</option>
+                      <option value="ReadWrite">ReadWrite</option>
+                      <option value="ReadOnly">ReadOnly</option>
+                    </select>
+                  </td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="btn btn--small" onClick={() => saveEdit(u.id)} disabled={busy}>
+                        Save
+                      </button>
+                      <button className="btn btn--small" onClick={() => setEditingId(null)} disabled={busy}>
+                        Cancel
+                      </button>
+                    </div>
+                  </td>
+                </>
+              ) : (
+                <>
+                  <td>{u.username}</td>
+                  <td>{u.role}</td>
+                  <td>
+                    {resetting === u.id ? (
+                      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                        <input
+                          type="password"
+                          placeholder="New password"
+                          value={resetPw}
+                          onChange={(e) => setResetPw(e.target.value)}
+                          style={{ width: 160 }}
+                        />
+                        <button className="btn btn--small" onClick={() => doReset(u.id)} disabled={!resetPw}>
+                          Save
+                        </button>
+                        <button
+                          className="btn btn--small"
+                          onClick={() => {
+                            setResetting(null);
+                            setResetPw("");
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="row-actions">
+                        <button
+                          className="btn btn--ghost btn--small"
+                          onClick={() => {
+                            setResetting(u.id);
+                            setResetPw("");
+                            setResetMsg(null);
+                          }}
+                        >
+                          Reset password
+                        </button>
+                        <button className="btn btn--ghost btn--small" onClick={() => startEdit(u)}>
+                          Edit
+                        </button>
+                        <button
+                          className="btn btn--danger btn--small"
+                          onClick={() => remove(u)}
+                          disabled={u.username === myUsername}
+                          title={u.username === myUsername ? "You can't delete your own account." : ""}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </>
+              )}
             </tr>
           ))}
         </tbody>
@@ -637,11 +1271,15 @@ function DangerZone() {
 
 export function Settings() {
   const [businessUnits, setBusinessUnits] = useState<BusinessUnit[]>([]);
+  const [divisions, setDivisions] = useState<Division[]>([]);
+  const [banks, setBanks] = useState<Bank[]>([]);
   const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
 
   function refreshShared() {
     api.get<BusinessUnit[]>("/api/settings/business-units").then((res) => setBusinessUnits(res.data));
+    api.get<Division[]>("/api/settings/divisions").then((res) => setDivisions(res.data));
+    api.get<Bank[]>("/api/settings/banks").then((res) => setBanks(res.data));
     api.get<Currency[]>("/api/settings/currencies").then((res) => setCurrencies(res.data));
   }
   useEffect(refreshShared, [refreshKey]);
@@ -655,7 +1293,9 @@ export function Settings() {
         <p className="page__subtitle">
           Set up Business Units, Divisions, Banks and Currencies here so they're ready before you
           import Bank Dues or FX Rates -- the Excel imports still auto-create anything you leave
-          out, but predefining them here avoids surprises and typos.
+          out, but predefining them here avoids surprises and typos. Every entity below can now be
+          edited or deleted; deleting is blocked (with a clear reason) if something still depends
+          on it.
         </p>
       </div>
 
@@ -663,7 +1303,8 @@ export function Settings() {
       <DivisionsSection businessUnits={businessUnits} onChange={bump} />
       <BanksSection onChange={bump} />
       <CurrenciesSection onChange={bump} />
-      <CurrencyPairsSection currencies={currencies} />
+      <CurrencyPairsSection currencies={currencies} onChange={bump} />
+      <AccountsSection businessUnits={businessUnits} divisions={divisions} banks={banks} currencies={currencies} />
       <UsersSection />
       <DangerZone />
     </div>

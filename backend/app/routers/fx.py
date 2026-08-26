@@ -73,12 +73,50 @@ def record_rate(
     db.commit()
     db.refresh(existing)
     return schemas.FxRateOut(
+        id=existing.id,
         rate_date=existing.rate_date,
         currency_pair=pair.label,
         rate_type=existing.rate_type,
         rate=existing.rate,
         is_carried_forward=False,
     )
+
+
+@router.patch("/rates/{rate_id}", response_model=schemas.FxRateOut)
+def update_rate(
+    rate_id: int,
+    payload: schemas.FxRateUpdate,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_write),
+):
+    rate_row = db.query(models.FxRate).get(rate_id)
+    if not rate_row:
+        raise HTTPException(404, "Rate entry not found.")
+    rate_row.rate = payload.rate
+    rate_row.is_manual_entry = True
+    db.commit()
+    db.refresh(rate_row)
+    pair = db.query(models.CurrencyPair).get(rate_row.currency_pair_id)
+    return schemas.FxRateOut(
+        id=rate_row.id,
+        rate_date=rate_row.rate_date,
+        currency_pair=pair.label if pair else "",
+        rate_type=rate_row.rate_type,
+        rate=rate_row.rate,
+        is_carried_forward=False,
+    )
+
+
+@router.delete("/rates/{rate_id}")
+def delete_rate(
+    rate_id: int, db: Session = Depends(get_db), _u: models.User = Depends(require_write)
+):
+    rate_row = db.query(models.FxRate).get(rate_id)
+    if not rate_row:
+        raise HTTPException(404, "Rate entry not found.")
+    db.delete(rate_row)
+    db.commit()
+    return {"deleted": True}
 
 
 @router.get("/rates/table", response_model=list[schemas.FxRateOut])
@@ -99,6 +137,7 @@ def rates_table(
     series = build_daily_series(db, pair.base_currency, pair.quote_currency, rate_type, start, end)
     return [
         schemas.FxRateOut(
+            id=row["id"],
             rate_date=row["rate_date"],
             currency_pair=pair.label,
             rate_type=rate_type,

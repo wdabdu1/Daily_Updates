@@ -76,7 +76,10 @@ def build_daily_series(
         .order_by(models.FxRate.rate_date.asc())
         .all()
     )
-    by_date = {r.rate_date: r.rate for r in actual_rows}
+    # Keep the row id alongside the rate -- callers use it to let a user
+    # edit/delete a specific *actual* entry (a carried-forward day has no id
+    # of its own, since it isn't a stored row).
+    by_date = {r.rate_date: (r.rate, r.id) for r in actual_rows}
 
     # Seed with the most recent actual rate at or before `start`, if any,
     # so the very first day of the window can still be carried forward.
@@ -91,10 +94,14 @@ def build_daily_series(
     d = start
     while d <= end:
         if d in by_date:
-            last_rate = by_date[d]
-            series.append({"rate_date": d, "rate": last_rate, "is_carried_forward": False})
+            last_rate, row_id = by_date[d]
+            series.append(
+                {"rate_date": d, "rate": last_rate, "is_carried_forward": False, "id": row_id}
+            )
         elif last_rate is not None:
-            series.append({"rate_date": d, "rate": last_rate, "is_carried_forward": True})
+            series.append(
+                {"rate_date": d, "rate": last_rate, "is_carried_forward": True, "id": None}
+            )
         # else: no rate known yet at all for this date -- omit rather than
         # show a fabricated zero.
         d += timedelta(days=1)

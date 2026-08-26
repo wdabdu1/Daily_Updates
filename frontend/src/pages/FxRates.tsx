@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
+import { NumericFormat } from "react-number-format";
 import { api, downloadXlsx } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { formatPlain } from "../format";
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 interface CurrencyPair {
   id: number;
@@ -12,6 +17,7 @@ interface CurrencyPair {
 }
 
 interface FxRateRow {
+  id: number | null;
   rate_date: string;
   currency_pair: string;
   rate_type: string;
@@ -48,6 +54,16 @@ export function FxRates() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
+  const [entryDate, setEntryDate] = useState(todayStr());
+  const [entryRate, setEntryRate] = useState("");
+  const [entryBusy, setEntryBusy] = useState(false);
+  const [entryError, setEntryError] = useState<string | null>(null);
+
+  const [editingDate, setEditingDate] = useState<string | null>(null);
+  const [editRate, setEditRate] = useState("");
+  const [rowBusy, setRowBusy] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
+
   useEffect(() => {
     api.get<CurrencyPair[]>("/api/settings/currency-pairs").then((res) => {
       setPairs(res.data);
@@ -65,14 +81,14 @@ export function FxRates() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pairId, pairs]);
 
-  useEffect(() => {
+  function loadTable() {
     if (pairId == null) return;
     setLoadingTable(true);
     const end = new Date();
     const start = new Date();
     start.setMonth(start.getMonth() - 6);
     const fmt = (d: Date) => d.toISOString().slice(0, 10);
-    api
+    return api
       .get<FxRateRow[]>("/api/fx/rates/table", {
         params: {
           currency_pair_id: pairId,
@@ -83,7 +99,69 @@ export function FxRates() {
       })
       .then((res) => setRows(res.data))
       .finally(() => setLoadingTable(false));
+  }
+
+  useEffect(() => {
+    loadTable();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pairId, rateType, importResult]);
+
+  async function addOrUpdateRate() {
+    if (pairId == null || !entryDate || !entryRate) return;
+    setEntryBusy(true);
+    setEntryError(null);
+    try {
+      await api.post("/api/fx/rates", {
+        rate_date: entryDate,
+        currency_pair_id: pairId,
+        rate_type: rateType,
+        rate: entryRate,
+      });
+      setEntryRate("");
+      loadTable();
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setEntryError(typeof detail === "string" && detail ? detail : "Couldn't save this rate.");
+    } finally {
+      setEntryBusy(false);
+    }
+  }
+
+  function startEdit(r: FxRateRow) {
+    setEditingDate(r.rate_date);
+    setEditRate(r.rate);
+    setRowError(null);
+  }
+
+  async function saveRowEdit(r: FxRateRow) {
+    if (!r.id) return;
+    setRowBusy(true);
+    setRowError(null);
+    try {
+      await api.patch(`/api/fx/rates/${r.id}`, { rate: editRate });
+      setEditingDate(null);
+      loadTable();
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setRowError(typeof detail === "string" && detail ? detail : "Couldn't update this rate.");
+    } finally {
+      setRowBusy(false);
+    }
+  }
+
+  async function deleteRow(r: FxRateRow) {
+    if (!r.id) return;
+    if (!window.confirm(`Delete the ${r.rate_type} rate entered for ${r.rate_date}? Later dates will fall back to carrying forward the next earlier entry.`))
+      return;
+    setRowError(null);
+    try {
+      await api.delete(`/api/fx/rates/${r.id}`);
+      loadTable();
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setRowError(typeof detail === "string" && detail ? detail : "Couldn't delete this rate.");
+    }
+  }
 
   async function handleDownloadTemplate() {
     await downloadXlsx("/api/fx/import/template", "fx_rates_template.xlsx");
@@ -179,6 +257,45 @@ export function FxRates() {
         </div>
       )}
 
+      {canWrite && (
+        <div className="card">
+          <h2 className="section-title">Add / Update a Rate</h2>
+          <p className="muted" style={{ marginTop: 0, marginBottom: "1rem" }}>
+            Enter today's (or any day's) rate directly -- this is the day-to-day way to keep
+            rates current without building a spreadsheet. Uses the pair and rate type selected
+            in Rate History below. Saving a date that already has a rate updates it.
+          </p>
+          <div className="form-grid" style={{ maxWidth: 560 }}>
+            <div>
+              <label className="field-label">Date</label>
+              <input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} />
+            </div>
+            <div>
+              <label className="field-label">
+                Rate ({pairs.find((p) => p.id === pairId)?.base_currency}/
+                {pairs.find((p) => p.id === pairId)?.quote_currency}, {rateType})
+              </label>
+              <NumericFormat
+                thousandSeparator=","
+                decimalScale={4}
+                allowNegative={false}
+                value={entryRate}
+                onValueChange={(v) => setEntryRate(v.value)}
+              />
+            </div>
+          </div>
+          <button
+            className="btn btn--primary"
+            style={{ marginTop: "0.75rem" }}
+            disabled={pairId == null || !entryDate || !entryRate || entryBusy}
+            onClick={addOrUpdateRate}
+          >
+            {entryBusy ? "Saving..." : "Save Rate"}
+          </button>
+          {entryError && <p className="error-text">{entryError}</p>}
+        </div>
+      )}
+
       <div className="card">
         <div className="toolbar">
           <h2 className="section-title" style={{ marginBottom: 0 }}>
@@ -208,6 +325,8 @@ export function FxRates() {
           </div>
         </div>
 
+        {rowError && <p className="error-text">{rowError}</p>}
+
         {loadingTable ? (
           <p className="muted">Loading...</p>
         ) : months.length === 0 ? (
@@ -223,16 +342,58 @@ export function FxRates() {
                     <th>Date</th>
                     <th className="numeric">Rate</th>
                     <th>Source</th>
+                    {canWrite && <th></th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {monthRows.map((r) => (
-                    <tr key={r.rate_date} className={r.is_carried_forward ? "is-carried-forward" : ""}>
-                      <td>{r.rate_date}</td>
-                      <td className="numeric">{formatPlain(r.rate)}</td>
-                      <td>{r.is_carried_forward ? "Carried forward" : "Entered"}</td>
-                    </tr>
-                  ))}
+                  {monthRows.map((r) =>
+                    editingDate === r.rate_date && r.id ? (
+                      <tr key={r.rate_date}>
+                        <td>{r.rate_date}</td>
+                        <td className="numeric">
+                          <NumericFormat
+                            style={{ textAlign: "right" }}
+                            thousandSeparator=","
+                            decimalScale={4}
+                            allowNegative={false}
+                            value={editRate}
+                            onValueChange={(v) => setEditRate(v.value)}
+                          />
+                        </td>
+                        <td>Entered</td>
+                        <td>
+                          <div className="row-actions">
+                            <button className="btn btn--small" onClick={() => saveRowEdit(r)} disabled={rowBusy}>
+                              Save
+                            </button>
+                            <button className="btn btn--small" onClick={() => setEditingDate(null)} disabled={rowBusy}>
+                              Cancel
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      <tr key={r.rate_date} className={r.is_carried_forward ? "is-carried-forward" : ""}>
+                        <td>{r.rate_date}</td>
+                        <td className="numeric">{formatPlain(r.rate)}</td>
+                        <td>{r.is_carried_forward ? "Carried forward" : "Entered"}</td>
+                        {canWrite && (
+                          <td>
+                            {r.id && (
+                              <div className="row-actions">
+                                <button className="btn btn--ghost btn--small" onClick={() => startEdit(r)}>
+                                  Edit
+                                </button>
+                                <button className="btn btn--danger btn--small" onClick={() => deleteRow(r)}>
+                                  Delete
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  )}
                 </tbody>
               </table>
             );

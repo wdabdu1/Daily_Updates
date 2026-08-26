@@ -30,6 +30,11 @@ class UserCreate(BaseModel):
     role: str = "ReadWrite"
 
 
+class UserUpdate(BaseModel):
+    username: str
+    role: str
+
+
 class BusinessUnitOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -37,6 +42,10 @@ class BusinessUnitOut(BaseModel):
 
 
 class BusinessUnitCreate(BaseModel):
+    name: str
+
+
+class BusinessUnitUpdate(BaseModel):
     name: str
 
 
@@ -52,6 +61,11 @@ class DivisionCreate(BaseModel):
     business_unit_id: int
 
 
+class DivisionUpdate(BaseModel):
+    name: str
+    business_unit_id: int
+
+
 class BankOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -60,6 +74,11 @@ class BankOut(BaseModel):
 
 
 class BankCreate(BaseModel):
+    short_name: str
+    full_name: str
+
+
+class BankUpdate(BaseModel):
     short_name: str
     full_name: str
 
@@ -113,7 +132,20 @@ class MasterAccountCreate(BaseModel):
     currency: str
 
 
+class MasterAccountUpdate(BaseModel):
+    business_unit_id: Optional[int] = None
+    division_id: Optional[int] = None
+    bank_id: int
+    account_name: str
+    account_number: str
+    currency: str
+
+
 class FxRateOut(BaseModel):
+    # None for a carried-forward row (it's computed at query time, not a
+    # real stored row) -- only present, and only then editable/deletable,
+    # for a row that was actually entered.
+    id: Optional[int] = None
     rate_date: date
     currency_pair: str
     rate_type: str
@@ -125,6 +157,10 @@ class FxRateCreate(BaseModel):
     rate_date: date
     currency_pair_id: int
     rate_type: str
+    rate: Decimal
+
+
+class FxRateUpdate(BaseModel):
     rate: Decimal
 
 
@@ -147,6 +183,17 @@ class BankDueCreate(BaseModel):
     due_date: date
     facility_type: str
     amount: Decimal
+
+
+class BankDueUpdate(BaseModel):
+    # Partial update -- only fields the caller actually sends are applied,
+    # so an inline edit-row form can send just what changed (e.g. only
+    # `amount`) instead of resubmitting every field.
+    account_id: Optional[int] = None
+    due_date: Optional[date] = None
+    facility_type: Optional[str] = None
+    amount: Optional[Decimal] = None
+    status: Optional[str] = None
 
 
 class ReceivableRow(BaseModel):

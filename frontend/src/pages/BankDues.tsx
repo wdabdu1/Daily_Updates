@@ -17,6 +17,14 @@ interface BankDue {
   account_number: string | null;
 }
 
+interface AccountOption {
+  id: number;
+  account_name: string;
+  account_number: string;
+  bank_short_name: string | null;
+  business_unit_name: string | null;
+}
+
 interface ImportResult {
   imported: number;
   updated: number;
@@ -33,16 +41,43 @@ interface ReceivableFormRow {
   currency: string;
   default_amount: string;
   default_amount_date: string | null;
+  is_recorded_for_date: boolean;
+}
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function accountLabel(a: AccountOption) {
+  const bu = a.business_unit_name ? ` -- ${a.business_unit_name}` : "";
+  return `${a.bank_short_name || "?"} / ${a.account_name} (${a.account_number})${bu}`;
 }
 
 function DuesSection() {
   const { canWrite } = useAuth();
   const [dues, setDues] = useState<BankDue[]>([]);
+  const [accounts, setAccounts] = useState<AccountOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [file, setFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+
+  const emptyDraft = { account_id: "", due_date: todayStr(), facility_type: "", amount: "" };
+  const [draft, setDraft] = useState(emptyDraft);
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState({
+    account_id: "",
+    due_date: "",
+    facility_type: "",
+    amount: "",
+    status: "Active",
+  });
+  const [editBusy, setEditBusy] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
 
   function refresh() {
     setLoading(true);
@@ -53,6 +88,14 @@ function DuesSection() {
   }
 
   useEffect(refresh, []);
+  useEffect(() => {
+    if (canWrite) {
+      api.get<AccountOption[]>("/api/accounts").then((res) => {
+        setAccounts(res.data);
+        setDraft((d) => (d.account_id ? d : { ...d, account_id: res.data[0] ? String(res.data[0].id) : "" }));
+      });
+    }
+  }, [canWrite]);
 
   async function handleImport() {
     if (!file) return;
@@ -87,6 +130,72 @@ function DuesSection() {
     refresh();
   }
 
+  async function addDue() {
+    if (!draft.account_id || !draft.due_date || !draft.facility_type.trim() || !draft.amount) return;
+    setAddBusy(true);
+    setAddError(null);
+    try {
+      await api.post("/api/dues", {
+        account_id: Number(draft.account_id),
+        due_date: draft.due_date,
+        facility_type: draft.facility_type.trim(),
+        amount: draft.amount,
+      });
+      setDraft({ ...emptyDraft, account_id: draft.account_id });
+      refresh();
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setAddError(typeof detail === "string" && detail ? detail : "Couldn't add this due.");
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
+  function startEdit(d: BankDue) {
+    setEditingId(d.id);
+    setEditDraft({
+      account_id: String(d.account_id),
+      due_date: d.due_date || "",
+      facility_type: d.facility_type || "",
+      amount: d.amount,
+      status: d.status,
+    });
+    setRowError(null);
+  }
+
+  async function saveEdit(id: number) {
+    setEditBusy(true);
+    setRowError(null);
+    try {
+      await api.put(`/api/dues/${id}`, {
+        account_id: Number(editDraft.account_id),
+        due_date: editDraft.due_date,
+        facility_type: editDraft.facility_type.trim(),
+        amount: editDraft.amount,
+        status: editDraft.status,
+      });
+      setEditingId(null);
+      refresh();
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setRowError(typeof detail === "string" && detail ? detail : "Couldn't update this due.");
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  async function removeDue(d: BankDue) {
+    if (!window.confirm(`Delete this due (${d.account_number}, ${d.due_date}, ${d.facility_type})?`)) return;
+    setRowError(null);
+    try {
+      await api.delete(`/api/dues/${d.id}`);
+      refresh();
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setRowError(typeof detail === "string" && detail ? detail : "Couldn't delete this due.");
+    }
+  }
+
   return (
     <div className="card">
       <h2 className="section-title">Bank Dues</h2>
@@ -94,9 +203,10 @@ function DuesSection() {
       {canWrite && (
         <>
           <p className="muted" style={{ marginTop: 0 }}>
-            Upload dues in bulk. Accounts referenced that don't exist yet (Business Unit,
-            Division, Bank, Account Number) are created automatically. Re-uploading the same
-            account + due date + facility type updates the amount/status instead of duplicating.
+            Upload dues in bulk, or add one below. Accounts referenced in an upload that don't
+            exist yet (Business Unit, Division, Bank, Account Number) are created automatically.
+            Re-uploading the same account + due date + facility type updates the amount/status
+            instead of duplicating.
           </p>
           <div className="toolbar">
             <div className="filters">
@@ -140,6 +250,8 @@ function DuesSection() {
         </>
       )}
 
+      {rowError && <p className="error-text">{rowError}</p>}
+
       {loading ? (
         <p className="muted">Loading...</p>
       ) : dues.length === 0 ? (
@@ -160,33 +272,151 @@ function DuesSection() {
             </tr>
           </thead>
           <tbody>
-            {dues.map((d) => (
-              <tr key={d.id}>
-                <td>{d.business_unit_name}</td>
-                <td>{d.division_name}</td>
-                <td>{d.bank_short_name}</td>
-                <td>{d.account_number}</td>
-                <td>{d.due_date}</td>
-                <td>{d.facility_type}</td>
-                <td className="numeric">{formatSDG(d.amount)}</td>
-                <td>
-                  <span className={"badge " + (d.status === "Active" ? "badge--negative" : "badge--neutral")}>
-                    {d.status}
-                  </span>
-                </td>
-                {canWrite && (
-                  <td>
-                    {d.status === "Active" && (
-                      <button className="btn btn--ghost" onClick={() => settle(d.id)}>
-                        Mark Settled
-                      </button>
-                    )}
+            {dues.map((d) =>
+              editingId === d.id ? (
+                <tr key={d.id}>
+                  <td colSpan={4}>
+                    <select value={editDraft.account_id} onChange={(e) => setEditDraft({ ...editDraft, account_id: e.target.value })}>
+                      {accounts.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {accountLabel(a)}
+                        </option>
+                      ))}
+                    </select>
                   </td>
-                )}
-              </tr>
-            ))}
+                  <td>
+                    <input
+                      type="date"
+                      value={editDraft.due_date}
+                      onChange={(e) => setEditDraft({ ...editDraft, due_date: e.target.value })}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={editDraft.facility_type}
+                      onChange={(e) => setEditDraft({ ...editDraft, facility_type: e.target.value })}
+                    />
+                  </td>
+                  <td className="numeric">
+                    <NumericFormat
+                      style={{ textAlign: "right" }}
+                      thousandSeparator=","
+                      decimalScale={2}
+                      allowNegative={false}
+                      value={editDraft.amount}
+                      onValueChange={(v) => setEditDraft({ ...editDraft, amount: v.value })}
+                    />
+                  </td>
+                  <td>
+                    <select value={editDraft.status} onChange={(e) => setEditDraft({ ...editDraft, status: e.target.value })}>
+                      <option value="Active">Active</option>
+                      <option value="Settled">Settled</option>
+                    </select>
+                  </td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="btn btn--small" onClick={() => saveEdit(d.id)} disabled={editBusy}>
+                        Save
+                      </button>
+                      <button className="btn btn--small" onClick={() => setEditingId(null)} disabled={editBusy}>
+                        Cancel
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                <tr key={d.id}>
+                  <td>{d.business_unit_name || "Unassigned"}</td>
+                  <td>{d.division_name || "—"}</td>
+                  <td>{d.bank_short_name}</td>
+                  <td>{d.account_number}</td>
+                  <td>{d.due_date}</td>
+                  <td>{d.facility_type}</td>
+                  <td className="numeric">{formatSDG(d.amount)}</td>
+                  <td>
+                    <span className={"badge " + (d.status === "Active" ? "badge--negative" : "badge--neutral")}>
+                      {d.status}
+                    </span>
+                  </td>
+                  {canWrite && (
+                    <td>
+                      <div className="row-actions">
+                        {d.status === "Active" && (
+                          <button className="btn btn--ghost btn--small" onClick={() => settle(d.id)}>
+                            Mark Settled
+                          </button>
+                        )}
+                        <button className="btn btn--ghost btn--small" onClick={() => startEdit(d)}>
+                          Edit
+                        </button>
+                        <button className="btn btn--danger btn--small" onClick={() => removeDue(d)}>
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              )
+            )}
           </tbody>
         </table>
+      )}
+
+      {canWrite && (
+        <div style={{ marginTop: "1.25rem", paddingTop: "1.25rem", borderTop: "1px solid var(--color-border)" }}>
+          <p className="field-label" style={{ marginBottom: "0.75rem" }}>
+            Add a due manually
+          </p>
+          <div className="form-grid">
+            <div>
+              <label className="field-label">Account</label>
+              <select value={draft.account_id} onChange={(e) => setDraft({ ...draft, account_id: e.target.value })}>
+                {accounts.length === 0 && <option value="">No accounts yet</option>}
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {accountLabel(a)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="field-label">Due Date</label>
+              <input type="date" value={draft.due_date} onChange={(e) => setDraft({ ...draft, due_date: e.target.value })} />
+            </div>
+            <div>
+              <label className="field-label">Facility Type</label>
+              <input
+                value={draft.facility_type}
+                onChange={(e) => setDraft({ ...draft, facility_type: e.target.value })}
+                placeholder="e.g. Overdraft"
+              />
+            </div>
+            <div>
+              <label className="field-label">Amount</label>
+              <NumericFormat
+                thousandSeparator=","
+                decimalScale={2}
+                allowNegative={false}
+                value={draft.amount}
+                onValueChange={(v) => setDraft({ ...draft, amount: v.value })}
+              />
+            </div>
+          </div>
+          <button
+            className="btn btn--primary"
+            style={{ marginTop: "0.75rem" }}
+            disabled={!draft.account_id || !draft.due_date || !draft.facility_type.trim() || !draft.amount || addBusy}
+            onClick={addDue}
+          >
+            {addBusy ? "Adding..." : "Add Due"}
+          </button>
+          {accounts.length === 0 && (
+            <p className="muted" style={{ marginTop: "0.5rem" }}>
+              No accounts registered yet -- add one under Settings, or it'll be created automatically the first time you import a due for it.
+            </p>
+          )}
+          {addError && <p className="error-text">{addError}</p>}
+        </div>
       )}
     </div>
   );
@@ -195,6 +425,7 @@ function DuesSection() {
 function ReceivablesSection() {
   const { canWrite } = useAuth();
   const [editing, setEditing] = useState(false);
+  const [positionDate, setPositionDate] = useState(todayStr());
   const [rows, setRows] = useState<ReceivableFormRow[]>([]);
   const [amounts, setAmounts] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(false);
@@ -205,7 +436,9 @@ function ReceivablesSection() {
     setLoading(true);
     setSaved(null);
     try {
-      const res = await api.get<ReceivableFormRow[]>("/api/receivables/form");
+      const res = await api.get<ReceivableFormRow[]>("/api/receivables/form", {
+        params: { position_date: positionDate },
+      });
       setRows(res.data);
       const initial: Record<number, string> = {};
       res.data.forEach((r) => (initial[r.account_id] = r.default_amount));
@@ -219,33 +452,51 @@ function ReceivablesSection() {
   async function save() {
     setSaving(true);
     try {
-      const today = new Date().toISOString().slice(0, 10);
       await api.post("/api/receivables/save", {
-        position_date: today,
+        position_date: positionDate,
         rows: rows.map((r) => ({ account_id: r.account_id, amount: amounts[r.account_id] || "0" })),
       });
-      setSaved(`Saved as today's (${today}) receivables position.`);
+      setSaved(`Saved as the ${positionDate} receivables position.`);
       setEditing(false);
     } finally {
       setSaving(false);
     }
   }
 
+  const isToday = positionDate === todayStr();
+
   return (
     <div className="card">
       <h2 className="section-title">Today's Receivables</h2>
       <p className="muted" style={{ marginTop: 0 }}>
-        This feeds the Home page's coverage comparison. Start an update to see every account
-        prefilled with its last recorded amount, adjust what's changed, and save.
+        This feeds the Home page's coverage comparison. Pick a date (defaults to today) and start
+        an update to see every account prefilled with the most recent amount recorded on or
+        before that date -- adjust what's changed, and save. Pick a past date to reopen and
+        correct that day's entries specifically.
       </p>
       {saved && <div className="alert alert--positive">{saved}</div>}
       {!editing && canWrite && (
-        <button className="btn btn--primary" onClick={startUpdate} disabled={loading}>
-          {loading ? "Loading..." : "Start Update"}
-        </button>
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "flex-end" }}>
+          <div>
+            <label className="field-label">Date</label>
+            <input
+              type="date"
+              value={positionDate}
+              max={todayStr()}
+              onChange={(e) => setPositionDate(e.target.value)}
+            />
+          </div>
+          <button className="btn btn--primary" onClick={startUpdate} disabled={loading}>
+            {loading ? "Loading..." : isToday ? "Start Update" : "Edit This Day"}
+          </button>
+        </div>
       )}
       {editing && (
         <>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Editing the position for <strong>{positionDate}</strong>
+            {isToday ? "" : " (a past day)"}.
+          </p>
           {rows.length === 0 ? (
             <div className="empty-state">No accounts registered yet.</div>
           ) : (
@@ -258,7 +509,7 @@ function ReceivablesSection() {
                   <th>Account</th>
                   <th>Currency</th>
                   <th className="numeric">Last Recorded</th>
-                  <th className="numeric">Today's Amount</th>
+                  <th className="numeric">{isToday ? "Today's Amount" : "Amount for This Day"}</th>
                 </tr>
               </thead>
               <tbody>
@@ -272,8 +523,9 @@ function ReceivablesSection() {
                     </td>
                     <td>{r.currency}</td>
                     <td className="numeric">
-                      {formatSDG(r.default_amount)}
-                      {r.default_amount_date ? ` (${r.default_amount_date})` : ""}
+                      {r.is_recorded_for_date
+                        ? "(already recorded for this day)"
+                        : `${formatSDG(r.default_amount)}${r.default_amount_date ? ` (${r.default_amount_date})` : ""}`}
                     </td>
                     <td className="numeric">
                       <NumericFormat

@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
@@ -22,12 +22,25 @@ class ReceivableFormRow(BaseModel):
     currency: str
     default_amount: Decimal
     default_amount_date: date | None
+    # True when default_amount_date == the requested position_date, i.e. an
+    # entry for that exact day already exists and saving will UPDATE it
+    # rather than fall back to an earlier day's figure as a starting point.
+    is_recorded_for_date: bool
 
 
 @router.get("/form", response_model=list[ReceivableFormRow])
-def get_form(db: Session = Depends(get_db), _u: models.User = Depends(require_write)):
-    """Powers the 'Start Update' workflow: every account, pre-filled with
-    the most recent prior snapshot amount (typically yesterday's)."""
+def get_form(
+    position_date: date = Query(default_factory=date.today),
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_write),
+):
+    """Powers the 'Start Update' / 'Edit a past day' workflow: every
+    account, pre-filled with its most recent snapshot amount on or before
+    `position_date` (defaults to today). Passing a past date lets you
+    reopen and correct that day's entries specifically -- if that account
+    already has a snapshot for that exact date, that's what's prefilled
+    (is_recorded_for_date=True); otherwise it falls back to the latest
+    earlier snapshot, same as the original "start update" behavior."""
     accounts = (
         db.query(models.MasterAccount)
         .options(
@@ -41,7 +54,10 @@ def get_form(db: Session = Depends(get_db), _u: models.User = Depends(require_wr
     for a in accounts:
         last = (
             db.query(models.ReceivableDaily)
-            .filter(models.ReceivableDaily.account_id == a.id)
+            .filter(
+                models.ReceivableDaily.account_id == a.id,
+                models.ReceivableDaily.position_date <= position_date,
+            )
             .order_by(models.ReceivableDaily.position_date.desc())
             .first()
         )
@@ -56,6 +72,7 @@ def get_form(db: Session = Depends(get_db), _u: models.User = Depends(require_wr
                 currency=a.currency,
                 default_amount=last.amount if last else Decimal("0"),
                 default_amount_date=last.position_date if last else None,
+                is_recorded_for_date=bool(last and last.position_date == position_date),
             )
         )
     return rows

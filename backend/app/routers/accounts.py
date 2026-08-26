@@ -52,12 +52,96 @@ def create_account(
         raise HTTPException(400, "Unknown bank.")
     if not db.query(models.Currency).get(payload.currency):
         raise HTTPException(400, "Unknown currency.")
+    dupe = (
+        db.query(models.MasterAccount)
+        .filter(
+            models.MasterAccount.bank_id == payload.bank_id,
+            models.MasterAccount.account_number == payload.account_number,
+        )
+        .first()
+    )
+    if dupe:
+        raise HTTPException(
+            400,
+            "An account with this Bank + Account Number already exists"
+            f" ({dupe.account_name}). Edit that one instead of creating a duplicate.",
+        )
 
     account = models.MasterAccount(**payload.model_dump())
     db.add(account)
     db.commit()
     db.refresh(account)
     return _to_out(account)
+
+
+@router.put("/{account_id}", response_model=schemas.MasterAccountOut)
+def update_account(
+    account_id: int,
+    payload: schemas.MasterAccountUpdate,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_manager),
+):
+    account = db.query(models.MasterAccount).get(account_id)
+    if not account:
+        raise HTTPException(404, "Account not found.")
+    if payload.division_id is not None:
+        division = db.query(models.Division).get(payload.division_id)
+        if not division or division.business_unit_id != payload.business_unit_id:
+            raise HTTPException(400, "This division does not belong to the selected business unit.")
+    if not db.query(models.Bank).get(payload.bank_id):
+        raise HTTPException(400, "Unknown bank.")
+    if not db.query(models.Currency).get(payload.currency):
+        raise HTTPException(400, "Unknown currency.")
+    dupe = (
+        db.query(models.MasterAccount)
+        .filter(
+            models.MasterAccount.bank_id == payload.bank_id,
+            models.MasterAccount.account_number == payload.account_number,
+            models.MasterAccount.id != account_id,
+        )
+        .first()
+    )
+    if dupe:
+        raise HTTPException(
+            400,
+            "An account with this Bank + Account Number already exists"
+            f" ({dupe.account_name}).",
+        )
+
+    for field, value in payload.model_dump().items():
+        setattr(account, field, value)
+    db.commit()
+    db.refresh(account)
+    return _to_out(account)
+
+
+@router.delete("/{account_id}")
+def delete_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_manager),
+):
+    account = db.query(models.MasterAccount).get(account_id)
+    if not account:
+        raise HTTPException(404, "Account not found.")
+    due_count = db.query(models.BankDue).filter(models.BankDue.account_id == account_id).count()
+    recv_count = (
+        db.query(models.ReceivableDaily).filter(models.ReceivableDaily.account_id == account_id).count()
+    )
+    if due_count or recv_count:
+        parts = []
+        if due_count:
+            parts.append(f"{due_count} bank due(s)")
+        if recv_count:
+            parts.append(f"{recv_count} receivables entr(y/ies)")
+        raise HTTPException(
+            400,
+            f"Can't delete this account -- still referenced by {' and '.join(parts)}. Delete"
+            " those first.",
+        )
+    db.delete(account)
+    db.commit()
+    return {"deleted": True}
 
 
 @router.get("/export")

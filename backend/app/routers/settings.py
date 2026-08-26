@@ -29,6 +29,58 @@ def create_business_unit(
     return bu
 
 
+@router.put("/business-units/{bu_id}", response_model=schemas.BusinessUnitOut)
+def update_business_unit(
+    bu_id: int,
+    payload: schemas.BusinessUnitUpdate,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_manager),
+):
+    bu = db.query(models.BusinessUnit).get(bu_id)
+    if not bu:
+        raise HTTPException(404, "Business unit not found.")
+    dupe = (
+        db.query(models.BusinessUnit)
+        .filter(models.BusinessUnit.name == payload.name, models.BusinessUnit.id != bu_id)
+        .first()
+    )
+    if dupe:
+        raise HTTPException(400, "A business unit with this name already exists.")
+    bu.name = payload.name
+    db.commit()
+    db.refresh(bu)
+    return bu
+
+
+@router.delete("/business-units/{bu_id}")
+def delete_business_unit(
+    bu_id: int, db: Session = Depends(get_db), _u: models.User = Depends(require_manager)
+):
+    bu = db.query(models.BusinessUnit).get(bu_id)
+    if not bu:
+        raise HTTPException(404, "Business unit not found.")
+    division_count = (
+        db.query(models.Division).filter(models.Division.business_unit_id == bu_id).count()
+    )
+    account_count = (
+        db.query(models.MasterAccount).filter(models.MasterAccount.business_unit_id == bu_id).count()
+    )
+    if division_count or account_count:
+        parts = []
+        if division_count:
+            parts.append(f"{division_count} division(s)")
+        if account_count:
+            parts.append(f"{account_count} account(s)")
+        raise HTTPException(
+            400,
+            f"Can't delete '{bu.name}' -- still referenced by {' and '.join(parts)}. Reassign"
+            " or remove those first.",
+        )
+    db.delete(bu)
+    db.commit()
+    return {"deleted": True}
+
+
 # ------------------------------------------------------------ Divisions --
 @router.get("/divisions", response_model=list[schemas.DivisionOut])
 def list_divisions(db: Session = Depends(get_db), _u: models.User = Depends(get_current_user)):
@@ -49,6 +101,58 @@ def create_division(
     db.commit()
     db.refresh(division)
     return division
+
+
+@router.put("/divisions/{division_id}", response_model=schemas.DivisionOut)
+def update_division(
+    division_id: int,
+    payload: schemas.DivisionUpdate,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_manager),
+):
+    division = db.query(models.Division).get(division_id)
+    if not division:
+        raise HTTPException(404, "Division not found.")
+    bu = db.query(models.BusinessUnit).get(payload.business_unit_id)
+    if not bu:
+        raise HTTPException(400, "Unknown business unit.")
+    dupe = (
+        db.query(models.Division)
+        .filter(
+            models.Division.name == payload.name,
+            models.Division.business_unit_id == payload.business_unit_id,
+            models.Division.id != division_id,
+        )
+        .first()
+    )
+    if dupe:
+        raise HTTPException(400, "This business unit already has a division with this name.")
+    division.name = payload.name
+    division.business_unit_id = payload.business_unit_id
+    db.commit()
+    db.refresh(division)
+    return division
+
+
+@router.delete("/divisions/{division_id}")
+def delete_division(
+    division_id: int, db: Session = Depends(get_db), _u: models.User = Depends(require_manager)
+):
+    division = db.query(models.Division).get(division_id)
+    if not division:
+        raise HTTPException(404, "Division not found.")
+    account_count = (
+        db.query(models.MasterAccount).filter(models.MasterAccount.division_id == division_id).count()
+    )
+    if account_count:
+        raise HTTPException(
+            400,
+            f"Can't delete '{division.name}' -- still referenced by {account_count} account(s)."
+            " Reassign or remove those first.",
+        )
+    db.delete(division)
+    db.commit()
+    return {"deleted": True}
 
 
 # ----------------------------------------------------------------Banks --
@@ -72,6 +176,51 @@ def create_bank(
     return bank
 
 
+@router.put("/banks/{bank_id}", response_model=schemas.BankOut)
+def update_bank(
+    bank_id: int,
+    payload: schemas.BankUpdate,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_manager),
+):
+    bank = db.query(models.Bank).get(bank_id)
+    if not bank:
+        raise HTTPException(404, "Bank not found.")
+    dupe = (
+        db.query(models.Bank)
+        .filter(models.Bank.short_name == payload.short_name, models.Bank.id != bank_id)
+        .first()
+    )
+    if dupe:
+        raise HTTPException(400, "A bank with this short name already exists.")
+    bank.short_name = payload.short_name
+    bank.full_name = payload.full_name
+    db.commit()
+    db.refresh(bank)
+    return bank
+
+
+@router.delete("/banks/{bank_id}")
+def delete_bank(
+    bank_id: int, db: Session = Depends(get_db), _u: models.User = Depends(require_manager)
+):
+    bank = db.query(models.Bank).get(bank_id)
+    if not bank:
+        raise HTTPException(404, "Bank not found.")
+    account_count = (
+        db.query(models.MasterAccount).filter(models.MasterAccount.bank_id == bank_id).count()
+    )
+    if account_count:
+        raise HTTPException(
+            400,
+            f"Can't delete '{bank.short_name}' -- still referenced by {account_count} account(s)."
+            " Reassign or remove those first.",
+        )
+    db.delete(bank)
+    db.commit()
+    return {"deleted": True}
+
+
 # ----------------------------------------------------------- Currencies --
 @router.get("/currencies", response_model=list[schemas.CurrencyOut])
 def list_currencies(db: Session = Depends(get_db), _u: models.User = Depends(get_current_user)):
@@ -90,6 +239,40 @@ def create_currency(
     db.add(models.Currency(code=code))
     db.commit()
     return {"code": code}
+
+
+@router.delete("/currencies/{code}")
+def delete_currency(
+    code: str, db: Session = Depends(get_db), _u: models.User = Depends(require_manager)
+):
+    code = code.upper()
+    currency = db.query(models.Currency).get(code)
+    if not currency:
+        raise HTTPException(404, "Currency not found.")
+    account_count = (
+        db.query(models.MasterAccount).filter(models.MasterAccount.currency == code).count()
+    )
+    pair_count = (
+        db.query(models.CurrencyPair)
+        .filter(
+            (models.CurrencyPair.base_currency == code) | (models.CurrencyPair.quote_currency == code)
+        )
+        .count()
+    )
+    if account_count or pair_count:
+        parts = []
+        if account_count:
+            parts.append(f"{account_count} account(s)")
+        if pair_count:
+            parts.append(f"{pair_count} currency pair(s)")
+        raise HTTPException(
+            400,
+            f"Can't delete '{code}' -- still referenced by {' and '.join(parts)}. Reassign"
+            " or remove those first.",
+        )
+    db.delete(currency)
+    db.commit()
+    return {"deleted": True}
 
 
 # ----------------------------------------------------------- Currency pairs
@@ -125,6 +308,25 @@ def create_currency_pair(
     db.commit()
     db.refresh(pair)
     return pair
+
+
+@router.delete("/currency-pairs/{pair_id}")
+def delete_currency_pair(
+    pair_id: int, db: Session = Depends(get_db), _u: models.User = Depends(require_manager)
+):
+    pair = db.query(models.CurrencyPair).get(pair_id)
+    if not pair:
+        raise HTTPException(404, "Currency pair not found.")
+    rate_count = db.query(models.FxRate).filter(models.FxRate.currency_pair_id == pair_id).count()
+    if rate_count:
+        raise HTTPException(
+            400,
+            f"Can't delete {pair.label} -- still referenced by {rate_count} FX rate entr(y/ies)."
+            " Delete those first.",
+        )
+    db.delete(pair)
+    db.commit()
+    return {"deleted": True}
 
 
 # ---------------------------------------------------------------- Users --
@@ -171,3 +373,63 @@ def reset_password(
     db.commit()
     db.refresh(user)
     return user
+
+
+@router.put("/users/{user_id}", response_model=schemas.UserOut)
+def update_user(
+    user_id: int,
+    payload: schemas.UserUpdate,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_manager),
+):
+    if payload.role not in ("Manager", "ReadWrite", "ReadOnly"):
+        raise HTTPException(400, "Role must be Manager, ReadWrite, or ReadOnly.")
+    user = db.query(models.User).get(user_id)
+    if not user:
+        raise HTTPException(404, "User not found.")
+    dupe = (
+        db.query(models.User)
+        .filter(models.User.username == payload.username, models.User.id != user_id)
+        .first()
+    )
+    if dupe:
+        raise HTTPException(400, "This username is already taken.")
+    if user.role == "Manager" and payload.role != "Manager":
+        remaining_managers = (
+            db.query(models.User)
+            .filter(models.User.role == "Manager", models.User.id != user_id)
+            .count()
+        )
+        if remaining_managers == 0:
+            raise HTTPException(
+                400, "Can't change this user's role -- they're the only Manager left."
+            )
+    user.username = payload.username
+    user.role = payload.role
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current: models.User = Depends(require_manager),
+):
+    if user_id == current.id:
+        raise HTTPException(400, "You can't delete your own account while logged in as it.")
+    user = db.query(models.User).get(user_id)
+    if not user:
+        raise HTTPException(404, "User not found.")
+    if user.role == "Manager":
+        remaining_managers = (
+            db.query(models.User)
+            .filter(models.User.role == "Manager", models.User.id != user_id)
+            .count()
+        )
+        if remaining_managers == 0:
+            raise HTTPException(400, "Can't delete the only remaining Manager.")
+    db.delete(user)
+    db.commit()
+    return {"deleted": True}

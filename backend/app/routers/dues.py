@@ -85,11 +85,47 @@ def create_due(
     db: Session = Depends(get_db),
     _u: models.User = Depends(require_write),
 ):
+    if not db.query(models.MasterAccount).get(payload.account_id):
+        raise HTTPException(400, "Unknown account.")
     due = models.BankDue(**payload.model_dump(), status="Active")
     db.add(due)
     db.commit()
     db.refresh(due)
     return due
+
+
+@router.put("/{due_id}", response_model=schemas.BankDueOut)
+def update_due(
+    due_id: int,
+    payload: schemas.BankDueUpdate,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_write),
+):
+    due = db.query(models.BankDue).get(due_id)
+    if not due:
+        raise HTTPException(404, "Due not found.")
+    data = payload.model_dump(exclude_unset=True)
+    if "account_id" in data and not db.query(models.MasterAccount).get(data["account_id"]):
+        raise HTTPException(400, "Unknown account.")
+    if "status" in data and data["status"] not in ("Active", "Settled"):
+        raise HTTPException(400, "Status must be Active or Settled.")
+    for field, value in data.items():
+        setattr(due, field, value)
+    db.commit()
+    db.refresh(due)
+    return due
+
+
+@router.delete("/{due_id}")
+def delete_due(
+    due_id: int, db: Session = Depends(get_db), _u: models.User = Depends(require_write)
+):
+    due = db.query(models.BankDue).get(due_id)
+    if not due:
+        raise HTTPException(404, "Due not found.")
+    db.delete(due)
+    db.commit()
+    return {"deleted": True}
 
 
 @router.post("/{due_id}/settle", response_model=schemas.BankDueOut)
