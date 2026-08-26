@@ -173,14 +173,14 @@ function CoverAnalysis() {
 
   const series = [
     {
-      label: "Receivables",
+      label: "Active Dues",
       color: "#1a7f4c",
-      points: points.map((p) => ({ x: p.position_date, y: p.total_receivables_sdg })),
+      points: points.map((p) => ({ x: p.position_date, y: p.total_dues_sdg })),
     },
     {
-      label: "Active Dues",
+      label: "Receivables",
       color: "#c0392b",
-      points: points.map((p) => ({ x: p.position_date, y: p.total_dues_sdg })),
+      points: points.map((p) => ({ x: p.position_date, y: p.total_receivables_sdg })),
     },
   ];
 

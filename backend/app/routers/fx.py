@@ -1,6 +1,8 @@
+import io
 from datetime import date, datetime
 from decimal import InvalidOperation
 
+import openpyxl
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -16,6 +18,11 @@ router = APIRouter(prefix="/api/fx", tags=["fx"])
 
 FX_TEMPLATE_COLUMNS = ["Date", "Base Currency", "Quote Currency", "Rate Type", "Rate"]
 
+# The three currencies that always get Market/CBOS/Pricing rates against
+# SDG -- the "compulsory 3-currency batch" the FX Rates page is built
+# around. Order matches how they're entered on the page (USD, Euro, AED).
+CORE_FX_CURRENCIES = ["USD", "EUR", "AED"]
+
 # str.title() mangles acronyms ("CBOS".title() == "Cbos"), so rate types
 # from an upload are normalized via this explicit case-insensitive map
 # instead, rather than relying on .title()/.capitalize().
@@ -24,6 +31,48 @@ _RATE_TYPE_CANONICAL = {t.lower(): t for t in SDG_RATE_TYPES}
 
 def _normalize_rate_type(raw: str) -> str | None:
     return _RATE_TYPE_CANONICAL.get(str(raw).strip().lower())
+
+
+def _get_or_create_sdg_pair(db: Session, currency: str) -> models.CurrencyPair:
+    """Look up (or silently create, same as the generic importer does) the
+    CURRENCY/SDG pair. Every currency in CORE_FX_CURRENCIES is expected to
+    be priced against SDG here -- this is the pair the compulsory
+    Market/CBOS/Pricing batch entries are written to."""
+    pair = get_pair(db, currency, "SDG")
+    if pair:
+        return pair
+    pair = models.CurrencyPair(
+        base_currency=currency, quote_currency="SDG", supports_extended_rates=True, is_default=False
+    )
+    db.add(pair)
+    db.flush()
+    return pair
+
+
+def _upsert_rate(
+    db: Session, pair: models.CurrencyPair, rate_type: str, rate_date: date, rate
+) -> tuple[models.FxRate, bool]:
+    """Create or update the (pair, rate_type, rate_date) row. Returns
+    (row, was_update)."""
+    existing = (
+        db.query(models.FxRate)
+        .filter(
+            models.FxRate.rate_date == rate_date,
+            models.FxRate.currency_pair_id == pair.id,
+            models.FxRate.rate_type == rate_type,
+        )
+        .first()
+    )
+    if existing:
+        existing.rate = rate
+        existing.is_manual_entry = True
+        return existing, True
+    row = models.FxRate(
+        rate_date=rate_date, currency_pair_id=pair.id, rate_type=rate_type, rate=rate, is_manual_entry=True
+    )
+    db.add(row)
+    db.flush()
+    return row, False
 
 
 @router.get("/rate-types")
@@ -79,6 +128,54 @@ def record_rate(
         rate_type=existing.rate_type,
         rate=existing.rate,
         is_carried_forward=False,
+    )
+
+
+@router.post("/rates/batch", response_model=schemas.FxBatchRateOut)
+def record_rate_batch(
+    payload: schemas.FxBatchRateCreate,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_write),
+):
+    """Save Market, CBOS, or Pricing for USD, Euro and AED (all vs SDG) in
+    one all-or-nothing save -- this is the primary way rates get entered
+    now. Pydantic already made all three values compulsory; this just
+    writes the three FxRate rows together and rolls back together if
+    anything goes wrong."""
+    if payload.rate_type not in SDG_RATE_TYPES:
+        raise HTTPException(400, f"Rate type must be one of: {', '.join(SDG_RATE_TYPES)}")
+
+    try:
+        usd_pair = _get_or_create_sdg_pair(db, "USD")
+        eur_pair = _get_or_create_sdg_pair(db, "EUR")
+        aed_pair = _get_or_create_sdg_pair(db, "AED")
+        usd_row, _ = _upsert_rate(db, usd_pair, payload.rate_type, payload.rate_date, payload.usd_rate)
+        eur_row, _ = _upsert_rate(db, eur_pair, payload.rate_type, payload.rate_date, payload.euro_rate)
+        aed_row, _ = _upsert_rate(db, aed_pair, payload.rate_type, payload.rate_date, payload.aed_rate)
+    except Exception:
+        db.rollback()
+        raise
+    db.commit()
+    db.refresh(usd_row)
+    db.refresh(eur_row)
+    db.refresh(aed_row)
+
+    def _out(row: models.FxRate, pair: models.CurrencyPair) -> schemas.FxRateOut:
+        return schemas.FxRateOut(
+            id=row.id,
+            rate_date=row.rate_date,
+            currency_pair=pair.label,
+            rate_type=row.rate_type,
+            rate=row.rate,
+            is_carried_forward=False,
+        )
+
+    return schemas.FxBatchRateOut(
+        rate_date=payload.rate_date,
+        rate_type=payload.rate_type,
+        usd=_out(usd_row, usd_pair),
+        euro=_out(eur_row, eur_pair),
+        aed=_out(aed_row, aed_pair),
     )
 
 
@@ -146,6 +243,51 @@ def rates_table(
         )
         for row in series
     ]
+
+
+@router.get("/rates/combined", response_model=list[schemas.FxCombinedRow])
+def rates_combined(
+    currency: str,
+    start: date = Query(...),
+    end: date = Query(...),
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(get_current_user),
+):
+    """Powers the redesigned FX Rates page: for one selected currency (vs
+    SDG), Market/CBOS/Pricing side by side per calendar day. Averaging and
+    period filtering happen client-side over this series so the same data
+    can drive "All / Quarter / Month" without extra round-trips."""
+    currency = currency.strip().upper()
+    pair = get_pair(db, currency, "SDG")
+    if not pair:
+        return []
+
+    by_type: dict[str, dict[date, dict]] = {}
+    for rt in SDG_RATE_TYPES:
+        series = build_daily_series(db, currency, "SDG", rt, start, end)
+        by_type[rt] = {row["rate_date"]: row for row in series}
+
+    all_dates = sorted(set().union(*(s.keys() for s in by_type.values())))
+    rows = []
+    for d in all_dates:
+        m = by_type["Market"].get(d)
+        c = by_type["CBOS"].get(d)
+        p = by_type["Pricing"].get(d)
+        rows.append(
+            schemas.FxCombinedRow(
+                rate_date=d,
+                market_rate=m["rate"] if m else None,
+                market_id=m["id"] if m else None,
+                market_carried_forward=m["is_carried_forward"] if m else False,
+                cbos_rate=c["rate"] if c else None,
+                cbos_id=c["id"] if c else None,
+                cbos_carried_forward=c["is_carried_forward"] if c else False,
+                pricing_rate=p["rate"] if p else None,
+                pricing_id=p["id"] if p else None,
+                pricing_carried_forward=p["is_carried_forward"] if p else False,
+            )
+        )
+    return rows
 
 
 @router.get("/rates/table/export")
@@ -341,6 +483,156 @@ def fx_import(
             updated += 1
         else:
             imported += 1
+
+    db.commit()
+    return schemas.ImportResult(imported=imported, updated=updated, skipped=errors)
+
+
+# ---------------------------------------------------------------------------
+# One-time historical seed: the "wide" layout the business's own currency
+# table comes in (one row per calendar day, Market/CBOS/Pricing x
+# USD/Euro/AED as separate columns) rather than the long Date/Pair/Rate
+# Type/Rate layout the generic importer above expects. Header names are
+# matched by text, not fixed column letters, so this tolerates the sheet's
+# leading blank column and the blank spacer column between the AED-only and
+# per-currency CBOS/Pricing sections.
+
+_HISTORY_COLUMNS = {
+    "date": "Date",
+    "usd_market": "USD Rate",
+    "euro_market": "Euro Rate",
+    "aed_market": "AED Rate",
+    "cbos_aed": "CBOS Rate (AED)",
+    "pricing_aed": "Pricing Rate (AED)",
+    "cbos_usd": "CBOS USD",
+    "cbos_euro": "CBOS Euro",
+    "pricing_usd": "Pricing USD",
+    "pricing_euro": "Pricing Euro",
+}
+
+
+def _find_history_header_row(ws) -> tuple[dict[str, int], int] | None:
+    for row in ws.iter_rows(min_row=1, max_row=20):
+        by_text = {
+            str(cell.value).strip().lower(): cell.column for cell in row if cell.value is not None
+        }
+        if "date" not in by_text:
+            continue
+        mapping: dict[str, int] = {}
+        ok = True
+        for key, header in _HISTORY_COLUMNS.items():
+            col = by_text.get(header.strip().lower())
+            if col is None:
+                ok = False
+                break
+            mapping[key] = col
+        if ok:
+            return mapping, row[0].row
+    return None
+
+
+@router.get("/import-history/template")
+def fx_import_history_template(_u: models.User = Depends(get_current_user)):
+    columns = list(_HISTORY_COLUMNS.values())
+    example_rows = [
+        ["2026-01-01", 3610.08, 4332.10, 981.00, 750.00, 1034.58, 2754.75, 3305.70, 3800.00, 1241.49],
+        ["2026-01-02", 3610.08, 4332.10, 981.00, 750.00, 1034.58, 2754.75, 3305.70, 3800.00, 1241.49],
+    ]
+    notes = [
+        "One-time historical seed for the FX Rates page's Market/CBOS/Pricing tables -- NOT the"
+        " same layout as the regular 'Import Rates from Excel' tool.",
+        "One row per calendar day. All 10 columns must be present, with these exact header names"
+        " (any column order is fine, and extra columns like 'Month' or 'Currency' are ignored).",
+        "All 9 rate values are required on every row -- Market/CBOS/Pricing all require USD, Euro"
+        " and AED together, same rule as manual entry on the FX Rates page.",
+        "Re-uploading a Date that already has rates on file UPDATES those rates rather than"
+        " creating duplicates -- safe to re-run after fixing a mistake.",
+        "USD/SDG and EUR/SDG pairs are created automatically if they don't exist yet (AED/SDG"
+        " already exists by default).",
+    ]
+    return xlsx_template_response(columns, example_rows, notes, "fx_history_import_template.xlsx")
+
+
+@router.post("/import-history", response_model=schemas.ImportResult)
+def fx_import_history(
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(require_write),
+):
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file.file.read()), data_only=True)
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't read this file as an Excel workbook: {e}")
+    ws = wb[wb.sheetnames[0]]
+
+    found = _find_history_header_row(ws)
+    if not found:
+        raise HTTPException(
+            400,
+            "Couldn't find the expected columns in this file. Expected: "
+            + ", ".join(_HISTORY_COLUMNS.values())
+            + ". Download the template to see the expected layout.",
+        )
+    col_map, header_row = found
+
+    usd_pair = _get_or_create_sdg_pair(db, "USD")
+    eur_pair = _get_or_create_sdg_pair(db, "EUR")
+    aed_pair = _get_or_create_sdg_pair(db, "AED")
+    db.flush()
+
+    imported = 0
+    updated = 0
+    errors: list[schemas.ImportRowError] = []
+
+    for r in range(header_row + 1, ws.max_row + 1):
+        raw_date = ws.cell(row=r, column=col_map["date"]).value
+        if raw_date is None:
+            continue  # trailing/blank spacer row -- not an error, just skip
+
+        try:
+            rate_date = raw_date.date() if hasattr(raw_date, "date") else pd.to_datetime(raw_date).date()
+        except Exception:
+            errors.append(schemas.ImportRowError(row_number=r, reason=f"'{raw_date}' isn't a valid date."))
+            continue
+
+        try:
+            values = {
+                key: parse_decimal(ws.cell(row=r, column=col).value)
+                for key, col in col_map.items()
+                if key != "date"
+            }
+        except (InvalidOperation, TypeError, ValueError) as e:
+            errors.append(
+                schemas.ImportRowError(
+                    row_number=r,
+                    reason=f"{rate_date}: missing or invalid rate value ({e}) -- all 9 rate columns"
+                    " are required for every date.",
+                )
+            )
+            continue
+
+        entries = [
+            (usd_pair, "Market", values["usd_market"]),
+            (eur_pair, "Market", values["euro_market"]),
+            (aed_pair, "Market", values["aed_market"]),
+            (aed_pair, "CBOS", values["cbos_aed"]),
+            (usd_pair, "CBOS", values["cbos_usd"]),
+            (eur_pair, "CBOS", values["cbos_euro"]),
+            (aed_pair, "Pricing", values["pricing_aed"]),
+            (usd_pair, "Pricing", values["pricing_usd"]),
+            (eur_pair, "Pricing", values["pricing_euro"]),
+        ]
+        try:
+            with db.begin_nested():
+                for pair, rate_type, rate in entries:
+                    _row, was_update = _upsert_rate(db, pair, rate_type, rate_date, rate)
+                    if was_update:
+                        updated += 1
+                    else:
+                        imported += 1
+        except Exception as e:
+            errors.append(schemas.ImportRowError(row_number=r, reason=f"Couldn't save {rate_date}: {e}"))
+            continue
 
     db.commit()
     return schemas.ImportResult(imported=imported, updated=updated, skipped=errors)

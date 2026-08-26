@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { NumericFormat } from "react-number-format";
-import { api, downloadXlsx } from "../api/client";
+import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { formatPlain } from "../format";
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
+
+// Fixed, generous fetch window so the whole of any historical import
+// (e.g. Jan 2026 onward) is always in view regardless of today's date --
+// the "All / Quarter / Month" filter below narrows what's actually shown.
+const HISTORY_START = "2020-01-01";
 
 interface CurrencyPair {
   id: number;
@@ -16,86 +21,101 @@ interface CurrencyPair {
   is_default: boolean;
 }
 
-interface FxRateRow {
-  id: number | null;
+interface CombinedRow {
   rate_date: string;
-  currency_pair: string;
-  rate_type: string;
-  rate: string;
-  is_carried_forward: boolean;
+  market_rate: string | null;
+  market_id: number | null;
+  market_carried_forward: boolean;
+  cbos_rate: string | null;
+  cbos_id: number | null;
+  cbos_carried_forward: boolean;
+  pricing_rate: string | null;
+  pricing_id: number | null;
+  pricing_carried_forward: boolean;
 }
 
-interface ImportResult {
-  imported: number;
-  updated: number;
-  skipped: { row_number: number; reason: string }[];
-}
+type FieldKey = "market" | "cbos" | "pricing";
+const FIELDS: { key: FieldKey; label: string }[] = [
+  { key: "market", label: "Market" },
+  { key: "cbos", label: "CBOS" },
+  { key: "pricing", label: "Pricing" },
+];
 
 function monthKey(dateStr: string) {
   return dateStr.slice(0, 7); // YYYY-MM
 }
-
 function monthLabel(key: string) {
   const [y, m] = key.split("-").map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+function quarterKey(dateStr: string) {
+  const [y, m] = dateStr.slice(0, 7).split("-").map(Number);
+  return `${y}-Q${Math.floor((m - 1) / 3) + 1}`;
+}
+function quarterLabel(key: string) {
+  const [y, q] = key.split("-Q");
+  return `Q${q} ${y}`;
+}
+
+function avg(rows: CombinedRow[], field: `${FieldKey}_rate`): number | null {
+  const vals = rows
+    .map((r) => r[field])
+    .filter((v): v is string => v !== null)
+    .map(parseFloat)
+    .filter((n) => !Number.isNaN(n));
+  if (!vals.length) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function fmtAvg(n: number | null): string {
+  if (n === null) return "—";
+  return formatPlain(n);
 }
 
 export function FxRates() {
   const { canWrite } = useAuth();
   const [pairs, setPairs] = useState<CurrencyPair[]>([]);
-  const [pairId, setPairId] = useState<number | null>(null);
-  const [rateType, setRateType] = useState("Market");
-  const [availableTypes, setAvailableTypes] = useState<string[]>(["Market"]);
-  const [rows, setRows] = useState<FxRateRow[]>([]);
+  const [currency, setCurrency] = useState<string>("");
+  const [rows, setRows] = useState<CombinedRow[]>([]);
   const [loadingTable, setLoadingTable] = useState(false);
 
-  const [file, setFile] = useState<File | null>(null);
-  const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<ImportResult | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
+  const [periodType, setPeriodType] = useState<"All" | "Quarter" | "Month">("All");
+  const [periodValue, setPeriodValue] = useState<string>("");
 
-  const [entryDate, setEntryDate] = useState(todayStr());
-  const [entryRate, setEntryRate] = useState("");
-  const [entryBusy, setEntryBusy] = useState(false);
-  const [entryError, setEntryError] = useState<string | null>(null);
+  const [batchDate, setBatchDate] = useState(todayStr());
+  const [batchType, setBatchType] = useState<"Market" | "CBOS" | "Pricing">("Market");
+  const [usdRate, setUsdRate] = useState("");
+  const [euroRate, setEuroRate] = useState("");
+  const [aedRate, setAedRate] = useState("");
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchOk, setBatchOk] = useState<string | null>(null);
 
-  const [editingDate, setEditingDate] = useState<string | null>(null);
-  const [editRate, setEditRate] = useState("");
+  const [editing, setEditing] = useState<{ date: string; field: FieldKey } | null>(null);
+  const [editValue, setEditValue] = useState("");
   const [rowBusy, setRowBusy] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
 
+  const sdgPairCurrencies = useMemo(
+    () => pairs.filter((p) => p.supports_extended_rates && p.quote_currency === "SDG").map((p) => p.base_currency),
+    [pairs]
+  );
+
   useEffect(() => {
-    api.get<CurrencyPair[]>("/api/settings/currency-pairs").then((res) => {
-      setPairs(res.data);
-      const def = res.data.find((p) => p.is_default) || res.data[0];
-      if (def) setPairId(def.id);
-    });
+    api.get<CurrencyPair[]>("/api/settings/currency-pairs").then((res) => setPairs(res.data));
   }, []);
 
   useEffect(() => {
-    if (pairId == null) return;
-    const pair = pairs.find((p) => p.id === pairId);
-    const types = pair?.supports_extended_rates ? ["Market", "CBOS", "Pricing"] : ["Market"];
-    setAvailableTypes(types);
-    if (!types.includes(rateType)) setRateType(types[0]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pairId, pairs]);
+    if (currency || sdgPairCurrencies.length === 0) return;
+    setCurrency(sdgPairCurrencies.includes("AED") ? "AED" : sdgPairCurrencies[0]);
+  }, [sdgPairCurrencies, currency]);
 
   function loadTable() {
-    if (pairId == null) return;
+    if (!currency) return;
     setLoadingTable(true);
-    const end = new Date();
-    const start = new Date();
-    start.setMonth(start.getMonth() - 6);
-    const fmt = (d: Date) => d.toISOString().slice(0, 10);
     return api
-      .get<FxRateRow[]>("/api/fx/rates/table", {
-        params: {
-          currency_pair_id: pairId,
-          rate_type: rateType,
-          start: fmt(start),
-          end: fmt(end),
-        },
+      .get<CombinedRow[]>("/api/fx/rates/combined", {
+        params: { currency, start: HISTORY_START, end: todayStr() },
       })
       .then((res) => setRows(res.data))
       .finally(() => setLoadingTable(false));
@@ -104,42 +124,55 @@ export function FxRates() {
   useEffect(() => {
     loadTable();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pairId, rateType, importResult]);
+  }, [currency]);
 
-  async function addOrUpdateRate() {
-    if (pairId == null || !entryDate || !entryRate) return;
-    setEntryBusy(true);
-    setEntryError(null);
+  async function saveBatch() {
+    if (!batchDate || !usdRate || !euroRate || !aedRate) return;
+    setBatchBusy(true);
+    setBatchError(null);
+    setBatchOk(null);
     try {
-      await api.post("/api/fx/rates", {
-        rate_date: entryDate,
-        currency_pair_id: pairId,
-        rate_type: rateType,
-        rate: entryRate,
+      await api.post("/api/fx/rates/batch", {
+        rate_date: batchDate,
+        rate_type: batchType,
+        usd_rate: usdRate,
+        euro_rate: euroRate,
+        aed_rate: aedRate,
       });
-      setEntryRate("");
+      setBatchOk(`Saved ${batchType} rates for ${batchDate}.`);
+      setUsdRate("");
+      setEuroRate("");
+      setAedRate("");
       loadTable();
+      // If a new currency pair was auto-created (USD/EUR/SDG on first use),
+      // the currency selector needs to know about it too.
+      api.get<CurrencyPair[]>("/api/settings/currency-pairs").then((res) => setPairs(res.data));
     } catch (e: any) {
       const detail = e?.response?.data?.detail;
-      setEntryError(typeof detail === "string" && detail ? detail : "Couldn't save this rate.");
+      setBatchError(typeof detail === "string" && detail ? detail : "Couldn't save these rates.");
     } finally {
-      setEntryBusy(false);
+      setBatchBusy(false);
     }
   }
 
-  function startEdit(r: FxRateRow) {
-    setEditingDate(r.rate_date);
-    setEditRate(r.rate);
+  function startEdit(r: CombinedRow, field: FieldKey) {
+    const id = field === "market" ? r.market_id : field === "cbos" ? r.cbos_id : r.pricing_id;
+    if (!id) return;
+    const current = field === "market" ? r.market_rate : field === "cbos" ? r.cbos_rate : r.pricing_rate;
+    setEditing({ date: r.rate_date, field });
+    setEditValue(current ?? "");
     setRowError(null);
   }
 
-  async function saveRowEdit(r: FxRateRow) {
-    if (!r.id) return;
+  async function saveEdit(r: CombinedRow) {
+    if (!editing) return;
+    const id = editing.field === "market" ? r.market_id : editing.field === "cbos" ? r.cbos_id : r.pricing_id;
+    if (!id) return;
     setRowBusy(true);
     setRowError(null);
     try {
-      await api.patch(`/api/fx/rates/${r.id}`, { rate: editRate });
-      setEditingDate(null);
+      await api.patch(`/api/fx/rates/${id}`, { rate: editValue });
+      setEditing(null);
       loadTable();
     } catch (e: any) {
       const detail = e?.response?.data?.detail;
@@ -149,13 +182,19 @@ export function FxRates() {
     }
   }
 
-  async function deleteRow(r: FxRateRow) {
-    if (!r.id) return;
-    if (!window.confirm(`Delete the ${r.rate_type} rate entered for ${r.rate_date}? Later dates will fall back to carrying forward the next earlier entry.`))
+  async function deleteCell(r: CombinedRow, field: FieldKey) {
+    const id = field === "market" ? r.market_id : field === "cbos" ? r.cbos_id : r.pricing_id;
+    if (!id) return;
+    const fieldLabel = FIELDS.find((f) => f.key === field)!.label;
+    if (
+      !window.confirm(
+        `Delete the ${fieldLabel} rate entered for ${r.rate_date}? Later dates will fall back to carrying forward the next earlier entry.`
+      )
+    )
       return;
     setRowError(null);
     try {
-      await api.delete(`/api/fx/rates/${r.id}`);
+      await api.delete(`/api/fx/rates/${id}`);
       loadTable();
     } catch (e: any) {
       const detail = e?.response?.data?.detail;
@@ -163,136 +202,195 @@ export function FxRates() {
     }
   }
 
-  async function handleDownloadTemplate() {
-    await downloadXlsx("/api/fx/import/template", "fx_rates_template.xlsx");
-  }
+  const quarters = useMemo(
+    () => Array.from(new Set(rows.map((r) => quarterKey(r.rate_date)))).sort().reverse(),
+    [rows]
+  );
+  const monthsAvailable = useMemo(
+    () => Array.from(new Set(rows.map((r) => monthKey(r.rate_date)))).sort().reverse(),
+    [rows]
+  );
 
-  async function handleImport() {
-    if (!file) return;
-    setImporting(true);
-    setImportError(null);
-    setImportResult(null);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await api.post<ImportResult>("/api/fx/import", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setImportResult(res.data);
-      setFile(null);
-    } catch (e: any) {
-      const detail = e?.response?.data?.detail;
-      setImportError(
-        typeof detail === "string" && detail
-          ? detail
-          : detail
-          ? JSON.stringify(detail)
-          : "Import failed -- the server didn't say why. Try again, and if it keeps happening, send this file over."
-      );
-    } finally {
-      setImporting(false);
+  useEffect(() => {
+    if (periodType === "Quarter" && !quarters.includes(periodValue)) setPeriodValue(quarters[0] ?? "");
+    if (periodType === "Month" && !monthsAvailable.includes(periodValue)) setPeriodValue(monthsAvailable[0] ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodType, quarters, monthsAvailable]);
+
+  const filteredRows = useMemo(() => {
+    if (periodType === "All") return rows;
+    if (periodType === "Quarter") return rows.filter((r) => quarterKey(r.rate_date) === periodValue);
+    return rows.filter((r) => monthKey(r.rate_date) === periodValue);
+  }, [rows, periodType, periodValue]);
+
+  const byMonth = useMemo(() => {
+    const m = new Map<string, CombinedRow[]>();
+    for (const r of rows) {
+      const k = monthKey(r.rate_date);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(r);
     }
+    return m;
+  }, [rows]);
+  const monthKeys = Array.from(byMonth.keys()).sort().reverse();
+  const currentMonthKey = todayStr().slice(0, 7);
+
+  function cell(r: CombinedRow, field: FieldKey) {
+    const rate = field === "market" ? r.market_rate : field === "cbos" ? r.cbos_rate : r.pricing_rate;
+    const id = field === "market" ? r.market_id : field === "cbos" ? r.cbos_id : r.pricing_id;
+    const carried =
+      field === "market" ? r.market_carried_forward : field === "cbos" ? r.cbos_carried_forward : r.pricing_carried_forward;
+
+    if (editing && editing.date === r.rate_date && editing.field === field) {
+      return (
+        <td className="numeric" key={field}>
+          <div style={{ display: "flex", gap: "0.35rem", alignItems: "center", justifyContent: "flex-end" }}>
+            <NumericFormat
+              style={{ textAlign: "right", width: 100 }}
+              thousandSeparator=","
+              decimalScale={4}
+              allowNegative={false}
+              value={editValue}
+              onValueChange={(v) => setEditValue(v.value)}
+            />
+            <button className="btn btn--small" onClick={() => saveEdit(r)} disabled={rowBusy}>
+              Save
+            </button>
+            <button className="btn btn--small" onClick={() => setEditing(null)} disabled={rowBusy}>
+              Cancel
+            </button>
+          </div>
+        </td>
+      );
+    }
+
+    return (
+      <td className={"numeric" + (carried ? " is-carried-forward" : "")} key={field}>
+        {rate === null ? (
+          <span className="muted">—</span>
+        ) : (
+          <span title={carried ? "Carried forward from an earlier entry" : "Entered"}>{formatPlain(rate)}</span>
+        )}
+        {canWrite && id && (
+          <span className="row-actions" style={{ marginLeft: "0.5rem" }}>
+            <button className="btn btn--ghost btn--small" onClick={() => startEdit(r, field)}>
+              Edit
+            </button>
+            <button className="btn btn--danger btn--small" onClick={() => deleteCell(r, field)}>
+              Delete
+            </button>
+          </span>
+        )}
+      </td>
+    );
   }
 
-  const byMonth = new Map<string, FxRateRow[]>();
-  for (const r of rows) {
-    const k = monthKey(r.rate_date);
-    if (!byMonth.has(k)) byMonth.set(k, []);
-    byMonth.get(k)!.push(r);
+  function table(tableRows: CombinedRow[]) {
+    return (
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th className="numeric">Market</th>
+            <th className="numeric">CBOS</th>
+            <th className="numeric">Pricing</th>
+          </tr>
+        </thead>
+        <tbody>
+          {tableRows
+            .slice()
+            .sort((a, b) => b.rate_date.localeCompare(a.rate_date))
+            .map((r) => (
+              <tr key={r.rate_date}>
+                <td>{r.rate_date}</td>
+                {cell(r, "market")}
+                {cell(r, "cbos")}
+                {cell(r, "pricing")}
+              </tr>
+            ))}
+          {tableRows.length === 0 && (
+            <tr>
+              <td className="muted" colSpan={4}>
+                No rates recorded yet for this currency/period.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    );
   }
-  const months = Array.from(byMonth.keys()).sort().reverse();
-  const currentMonthKey = new Date().toISOString().slice(0, 7);
 
   return (
     <div className="page">
       <div className="page__header">
         <h1 className="page__title">FX Rates</h1>
         <p className="page__subtitle">
-          Market, CBOS and Pricing rates. Gaps between entries are automatically carried
-          forward from the last known rate.
+          Market, CBOS and Pricing rates for the selected currency, side by side. Gaps between
+          entries are automatically carried forward from the last known rate.
         </p>
       </div>
 
       {canWrite && (
         <div className="card">
-          <h2 className="section-title">Import Rates from Excel</h2>
+          <h2 className="section-title">Add / Update Rates</h2>
           <p className="muted" style={{ marginTop: 0, marginBottom: "1rem" }}>
-            Upload rates in bulk. Re-uploading a Date + Pair + Rate Type that already exists
-            updates it — use this to replace test data with final figures.
+            USD, Euro and AED are saved together as one entry -- all three are required, whichever
+            rate type you're recording.
           </p>
-          <div className="toolbar">
-            <div className="filters">
-              <button className="btn btn--ghost" onClick={handleDownloadTemplate}>
-                Download Template
-              </button>
-              <input
-                type="file"
-                accept=".xlsx"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              />
-              <button className="btn btn--primary" disabled={!file || importing} onClick={handleImport}>
-                {importing ? "Uploading..." : "Upload"}
-              </button>
+          <div className="form-grid" style={{ maxWidth: 720 }}>
+            <div>
+              <label className="field-label">Rate Type</label>
+              <select value={batchType} onChange={(e) => setBatchType(e.target.value as any)}>
+                <option value="Market">Market</option>
+                <option value="CBOS">CBOS</option>
+                <option value="Pricing">Pricing</option>
+              </select>
             </div>
-          </div>
-          {importError && <p className="error-text">{importError}</p>}
-          {importResult && (
-            <div className={"alert " + (importResult.skipped.length ? "alert--neutral" : "alert--positive")}>
-              Imported {importResult.imported} new rate(s), updated {importResult.updated}.
-              {importResult.skipped.length > 0 && (
-                <>
-                  {" "}
-                  {importResult.skipped.length} row(s) skipped:
-                  <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.2rem" }}>
-                    {importResult.skipped.map((s) => (
-                      <li key={s.row_number}>
-                        Row {s.row_number}: {s.reason}
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {canWrite && (
-        <div className="card">
-          <h2 className="section-title">Add / Update a Rate</h2>
-          <p className="muted" style={{ marginTop: 0, marginBottom: "1rem" }}>
-            Enter today's (or any day's) rate directly -- this is the day-to-day way to keep
-            rates current without building a spreadsheet. Uses the pair and rate type selected
-            in Rate History below. Saving a date that already has a rate updates it.
-          </p>
-          <div className="form-grid" style={{ maxWidth: 560 }}>
             <div>
               <label className="field-label">Date</label>
-              <input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} />
+              <input type="date" value={batchDate} onChange={(e) => setBatchDate(e.target.value)} />
             </div>
             <div>
-              <label className="field-label">
-                Rate ({pairs.find((p) => p.id === pairId)?.base_currency}/
-                {pairs.find((p) => p.id === pairId)?.quote_currency}, {rateType})
-              </label>
+              <label className="field-label">USD Rate</label>
               <NumericFormat
                 thousandSeparator=","
                 decimalScale={4}
                 allowNegative={false}
-                value={entryRate}
-                onValueChange={(v) => setEntryRate(v.value)}
+                value={usdRate}
+                onValueChange={(v) => setUsdRate(v.value)}
+              />
+            </div>
+            <div>
+              <label className="field-label">Euro Rate</label>
+              <NumericFormat
+                thousandSeparator=","
+                decimalScale={4}
+                allowNegative={false}
+                value={euroRate}
+                onValueChange={(v) => setEuroRate(v.value)}
+              />
+            </div>
+            <div>
+              <label className="field-label">AED Rate</label>
+              <NumericFormat
+                thousandSeparator=","
+                decimalScale={4}
+                allowNegative={false}
+                value={aedRate}
+                onValueChange={(v) => setAedRate(v.value)}
               />
             </div>
           </div>
           <button
             className="btn btn--primary"
             style={{ marginTop: "0.75rem" }}
-            disabled={pairId == null || !entryDate || !entryRate || entryBusy}
-            onClick={addOrUpdateRate}
+            disabled={!batchDate || !usdRate || !euroRate || !aedRate || batchBusy}
+            onClick={saveBatch}
           >
-            {entryBusy ? "Saving..." : "Save Rate"}
+            {batchBusy ? "Saving..." : "Save Rates"}
           </button>
-          {entryError && <p className="error-text">{entryError}</p>}
+          {batchError && <p className="error-text">{batchError}</p>}
+          {batchOk && <p className="muted">{batchOk}</p>}
         </div>
       )}
 
@@ -302,26 +400,53 @@ export function FxRates() {
             Rate History
           </h2>
           <div className="filters">
-            <select value={pairId ?? ""} onChange={(e) => setPairId(Number(e.target.value))}>
-              {pairs.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.base_currency}/{p.quote_currency}
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+              {sdgPairCurrencies.map((c) => (
+                <option key={c} value={c}>
+                  {c}
                 </option>
               ))}
             </select>
-            <select value={rateType} onChange={(e) => setRateType(e.target.value)}>
-              {availableTypes.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
+            <select value={periodType} onChange={(e) => setPeriodType(e.target.value as any)}>
+              <option value="All">All</option>
+              <option value="Quarter">Quarter</option>
+              <option value="Month">Month</option>
             </select>
-            <a href="#" onClick={(e) => { e.preventDefault(); downloadXlsx(
-              `/api/fx/rates/table/export?currency_pair_id=${pairId}&rate_type=${rateType}&start=${new Date(new Date().setMonth(new Date().getMonth()-6)).toISOString().slice(0,10)}&end=${new Date().toISOString().slice(0,10)}`,
-              "fx_rates.xlsx"
-            ); }} className="btn btn--ghost">
-              Download as Excel
-            </a>
+            {periodType === "Quarter" && (
+              <select value={periodValue} onChange={(e) => setPeriodValue(e.target.value)}>
+                {quarters.map((q) => (
+                  <option key={q} value={q}>
+                    {quarterLabel(q)}
+                  </option>
+                ))}
+              </select>
+            )}
+            {periodType === "Month" && (
+              <select value={periodValue} onChange={(e) => setPeriodValue(e.target.value)}>
+                {monthsAvailable.map((m) => (
+                  <option key={m} value={m}>
+                    {monthLabel(m)}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        </div>
+
+        <div className="stat-grid" style={{ marginBottom: "1rem" }}>
+          <div className="stat-card">
+            <p className="stat-card__label">
+              Market Average ({periodType === "All" ? "All data" : periodType === "Quarter" ? quarterLabel(periodValue || "") : monthLabel(periodValue || "")})
+            </p>
+            <p className="stat-card__value">{fmtAvg(avg(filteredRows, "market_rate"))}</p>
+          </div>
+          <div className="stat-card">
+            <p className="stat-card__label">CBOS Average</p>
+            <p className="stat-card__value">{fmtAvg(avg(filteredRows, "cbos_rate"))}</p>
+          </div>
+          <div className="stat-card">
+            <p className="stat-card__label">Pricing Average</p>
+            <p className="stat-card__value">{fmtAvg(avg(filteredRows, "pricing_rate"))}</p>
           </div>
         </div>
 
@@ -329,83 +454,33 @@ export function FxRates() {
 
         {loadingTable ? (
           <p className="muted">Loading...</p>
-        ) : months.length === 0 ? (
-          <div className="empty-state">No rates recorded yet for this pair/type.</div>
+        ) : monthKeys.length === 0 ? (
+          <div className="empty-state">No rates recorded yet for this currency.</div>
         ) : (
-          months.map((m) => {
-            const monthRows = byMonth.get(m)!.slice().sort((a, b) => b.rate_date.localeCompare(a.rate_date));
+          monthKeys.map((m) => {
+            const monthRows = byMonth.get(m)!;
             const isCurrent = m === currentMonthKey;
-            const table = (
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th className="numeric">Rate</th>
-                    <th>Source</th>
-                    {canWrite && <th></th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {monthRows.map((r) =>
-                    editingDate === r.rate_date && r.id ? (
-                      <tr key={r.rate_date}>
-                        <td>{r.rate_date}</td>
-                        <td className="numeric">
-                          <NumericFormat
-                            style={{ textAlign: "right" }}
-                            thousandSeparator=","
-                            decimalScale={4}
-                            allowNegative={false}
-                            value={editRate}
-                            onValueChange={(v) => setEditRate(v.value)}
-                          />
-                        </td>
-                        <td>Entered</td>
-                        <td>
-                          <div className="row-actions">
-                            <button className="btn btn--small" onClick={() => saveRowEdit(r)} disabled={rowBusy}>
-                              Save
-                            </button>
-                            <button className="btn btn--small" onClick={() => setEditingDate(null)} disabled={rowBusy}>
-                              Cancel
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : (
-                      <tr key={r.rate_date} className={r.is_carried_forward ? "is-carried-forward" : ""}>
-                        <td>{r.rate_date}</td>
-                        <td className="numeric">{formatPlain(r.rate)}</td>
-                        <td>{r.is_carried_forward ? "Carried forward" : "Entered"}</td>
-                        {canWrite && (
-                          <td>
-                            {r.id && (
-                              <div className="row-actions">
-                                <button className="btn btn--ghost btn--small" onClick={() => startEdit(r)}>
-                                  Edit
-                                </button>
-                                <button className="btn btn--danger btn--small" onClick={() => deleteRow(r)}>
-                                  Delete
-                                </button>
-                              </div>
-                            )}
-                          </td>
-                        )}
-                      </tr>
-                    )
-                  )}
-                </tbody>
-              </table>
+            const summaryLine = (
+              <p className="muted" style={{ fontSize: "0.82rem", margin: "0 0 0.5rem" }}>
+                Averages for {monthLabel(m)}: Market {fmtAvg(avg(monthRows, "market_rate"))} · CBOS{" "}
+                {fmtAvg(avg(monthRows, "cbos_rate"))} · Pricing {fmtAvg(avg(monthRows, "pricing_rate"))}
+              </p>
             );
             return isCurrent ? (
               <div key={m} style={{ marginBottom: "1rem" }}>
-                <p className="section-title" style={{ fontSize: "0.95rem" }}>{monthLabel(m)}</p>
-                {table}
+                <p className="section-title" style={{ fontSize: "0.95rem" }}>
+                  {monthLabel(m)}
+                </p>
+                {summaryLine}
+                {table(monthRows)}
               </div>
             ) : (
               <details className="month-group" key={m}>
                 <summary>{monthLabel(m)}</summary>
-                <div style={{ padding: "0 1rem 0.75rem" }}>{table}</div>
+                <div style={{ padding: "0 1rem 0.75rem" }}>
+                  {summaryLine}
+                  {table(monthRows)}
+                </div>
               </details>
             );
           })

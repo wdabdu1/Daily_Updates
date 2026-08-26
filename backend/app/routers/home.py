@@ -86,7 +86,14 @@ def summary(db: Session = Depends(get_db), _user: models.User = Depends(require_
     accounts = db.query(models.MasterAccount).all()
     total_recv, total_dues, unconverted = _compute_group(db, accounts, as_of)
 
-    gap = total_recv - total_dues
+    # Cover convention: Dues are the hedge/coverage side, Receivables are the
+    # exposure they need to cover. gap = dues - receivables, so gap >= 0
+    # ("covered") means dues cover (or exceed) receivables -- positive/green.
+    # gap < 0 ("shortfall") means receivables exceed dues -- an uncovered
+    # exposure, shown red. This is deliberately the mirror image of a naive
+    # "cash covers what we owe" reading; it reflects how this business
+    # actually wants the signal read.
+    gap = total_dues - total_recv
     gap_pct = None
     if total_dues != 0:
         gap_pct = (gap / total_dues * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -159,7 +166,7 @@ def breakdown(
 
     rows = []
     for label, total_recv, total_dues in computed:
-        gap = total_recv - total_dues
+        gap = total_dues - total_recv  # same dues-minus-receivables convention as /summary
         pct = None
         if grand_total_recv != 0:
             pct = (total_recv / grand_total_recv * 100).quantize(

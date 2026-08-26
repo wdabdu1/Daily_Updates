@@ -164,6 +164,46 @@ class FxRateUpdate(BaseModel):
     rate: Decimal
 
 
+class FxBatchRateCreate(BaseModel):
+    """Market/CBOS/Pricing rates are always entered as one save covering
+    USD, Euro and AED against SDG together -- all three are required, there
+    is no partial batch save. Pydantic enforces "compulsory" here simply by
+    these fields not being Optional."""
+
+    rate_date: date
+    rate_type: str
+    usd_rate: Decimal
+    euro_rate: Decimal
+    aed_rate: Decimal
+
+
+class FxBatchRateOut(BaseModel):
+    rate_date: date
+    rate_type: str
+    usd: FxRateOut
+    euro: FxRateOut
+    aed: FxRateOut
+
+
+class FxCombinedRow(BaseModel):
+    """One calendar day's Market/CBOS/Pricing rates for a single selected
+    currency (vs SDG), merged side by side. `*_id` is None for a
+    carried-forward day (nothing stored for that exact date) or when that
+    rate type has no entry at all yet -- only a non-None id is
+    editable/deletable via the existing per-rate endpoints."""
+
+    rate_date: date
+    market_rate: Optional[Decimal] = None
+    market_id: Optional[int] = None
+    market_carried_forward: bool = False
+    cbos_rate: Optional[Decimal] = None
+    cbos_id: Optional[int] = None
+    cbos_carried_forward: bool = False
+    pricing_rate: Optional[Decimal] = None
+    pricing_id: Optional[int] = None
+    pricing_carried_forward: bool = False
+
+
 class BankDueOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

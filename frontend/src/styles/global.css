@@ -330,6 +330,15 @@ tr.is-carried-forward td {
   font-style: italic;
 }
 
+/* Per-cell variant: the combined FX Rates table (Market/CBOS/Pricing side
+   by side) can have one column carried-forward while another has a real
+   entry on the same date, so this is applied to individual <td>s rather
+   than the whole row. */
+td.is-carried-forward {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
 /* ---------------------------------------------------------------Forms */
 .form-grid {
   display: grid;

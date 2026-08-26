@@ -83,13 +83,13 @@ export function Home() {
 
       {summary.status === "shortfall" && (
         <div className="alert alert--negative">
-          Liquidity alert: active bank dues exceed today's receivables by{" "}
-          {formatSDG(summary.gap_sdg)}.
+          Exposure alert: today's receivables exceed active bank dues (coverage) by{" "}
+          {formatSDG(summary.gap_sdg.replace(/^-/, ""))}.
         </div>
       )}
       {summary.status === "covered" && (
         <div className="alert alert--positive">
-          Cash position is sufficient to cover active bank dues.
+          Active bank dues cover today's receivables.
         </div>
       )}
       {summary.status === "no_data" && (
@@ -109,7 +109,7 @@ export function Home() {
           <p className="stat-card__value">{formatSDG(summary.total_dues_sdg)}</p>
         </div>
         <div className="stat-card">
-          <p className="stat-card__label">Net Coverage Gap</p>
+          <p className="stat-card__label">Cover (Dues − Receivables)</p>
           <p className="stat-card__value">{formatSDG(summary.gap_sdg)}</p>
           <p className="stat-card__meta">
             <span

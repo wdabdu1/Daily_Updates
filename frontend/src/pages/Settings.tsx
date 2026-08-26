@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api/client";
+import { api, downloadXlsx } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 
 interface BusinessUnit {
@@ -712,6 +712,156 @@ function CurrencyPairsSection({ currencies, onChange }: { currencies: Currency[]
   );
 }
 
+// ------------------------------------------------------------------ FX Data Import
+interface ImportResult {
+  imported: number;
+  updated: number;
+  skipped: { row_number: number; reason: string }[];
+}
+
+function ImportResultView({ result }: { result: ImportResult }) {
+  return (
+    <div className={"alert " + (result.skipped.length ? "alert--neutral" : "alert--positive")} style={{ marginTop: "1rem" }}>
+      Imported {result.imported} new entr(y/ies), updated {result.updated}.
+      {result.skipped.length > 0 && (
+        <>
+          {" "}
+          {result.skipped.length} row(s) skipped:
+          <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.2rem" }}>
+            {result.skipped.map((s) => (
+              <li key={s.row_number}>
+                Row {s.row_number}: {s.reason}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+function FxImportSection() {
+  const [historyFile, setHistoryFile] = useState<File | null>(null);
+  const [historyImporting, setHistoryImporting] = useState(false);
+  const [historyResult, setHistoryResult] = useState<ImportResult | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  const [genericFile, setGenericFile] = useState<File | null>(null);
+  const [genericImporting, setGenericImporting] = useState(false);
+  const [genericResult, setGenericResult] = useState<ImportResult | null>(null);
+  const [genericError, setGenericError] = useState<string | null>(null);
+
+  async function runImport(
+    file: File | null,
+    url: string,
+    setImporting: (b: boolean) => void,
+    setResult: (r: ImportResult | null) => void,
+    setError: (e: string | null) => void,
+    setFile: (f: File | null) => void
+  ) {
+    if (!file) return;
+    setImporting(true);
+    setError(null);
+    setResult(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await api.post<ImportResult>(url, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setResult(res.data);
+      setFile(null);
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      setError(
+        typeof detail === "string" && detail
+          ? detail
+          : detail
+          ? JSON.stringify(detail)
+          : "Import failed -- the server didn't say why. Try again, and if it keeps happening, send this file over."
+      );
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2 className="section-title">FX Data Import</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Both tools here live in Settings rather than on the FX Rates page, so that page stays a
+        clean, permanent-looking view of the rate history rather than an upload form.
+      </p>
+
+      <div style={{ marginTop: "1.5rem" }}>
+        <h3 style={{ margin: "0 0 0.35rem", fontSize: "0.95rem" }}>One-Time Historical Import</h3>
+        <p className="muted" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
+          For a currency table with one row per day and Market/CBOS/Pricing already broken out by
+          USD/Euro/AED as columns (e.g. your Jan-Jul 2026 file). Re-uploading a date that's already
+          on file updates it rather than duplicating.
+        </p>
+        <div className="toolbar">
+          <div className="filters">
+            <button
+              className="btn btn--ghost"
+              onClick={() => downloadXlsx("/api/fx/import-history/template", "fx_history_import_template.xlsx")}
+            >
+              Download Template
+            </button>
+            <input type="file" accept=".xlsx" onChange={(e) => setHistoryFile(e.target.files?.[0] ?? null)} />
+            <button
+              className="btn btn--primary"
+              disabled={!historyFile || historyImporting}
+              onClick={() =>
+                runImport(
+                  historyFile,
+                  "/api/fx/import-history",
+                  setHistoryImporting,
+                  setHistoryResult,
+                  setHistoryError,
+                  setHistoryFile
+                )
+              }
+            >
+              {historyImporting ? "Uploading..." : "Upload"}
+            </button>
+          </div>
+        </div>
+        {historyError && <p className="error-text">{historyError}</p>}
+        {historyResult && <ImportResultView result={historyResult} />}
+      </div>
+
+      <div style={{ marginTop: "2rem", borderTop: "1px solid var(--color-border)", paddingTop: "1.5rem" }}>
+        <h3 style={{ margin: "0 0 0.35rem", fontSize: "0.95rem" }}>Import Rates from Excel</h3>
+        <p className="muted" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
+          General-purpose bulk upload: one row per Date + Pair + Rate Type + Rate. Re-uploading a
+          combination that already exists updates it -- use this to replace test data with final
+          figures.
+        </p>
+        <div className="toolbar">
+          <div className="filters">
+            <button className="btn btn--ghost" onClick={() => downloadXlsx("/api/fx/import/template", "fx_rates_template.xlsx")}>
+              Download Template
+            </button>
+            <input type="file" accept=".xlsx" onChange={(e) => setGenericFile(e.target.files?.[0] ?? null)} />
+            <button
+              className="btn btn--primary"
+              disabled={!genericFile || genericImporting}
+              onClick={() =>
+                runImport(genericFile, "/api/fx/import", setGenericImporting, setGenericResult, setGenericError, setGenericFile)
+              }
+            >
+              {genericImporting ? "Uploading..." : "Upload"}
+            </button>
+          </div>
+        </div>
+        {genericError && <p className="error-text">{genericError}</p>}
+        {genericResult && <ImportResultView result={genericResult} />}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------- Accounts
 function AccountsSection({
   businessUnits,
@@ -1304,6 +1454,7 @@ export function Settings() {
       <BanksSection onChange={bump} />
       <CurrenciesSection onChange={bump} />
       <CurrencyPairsSection currencies={currencies} onChange={bump} />
+      <FxImportSection />
       <AccountsSection businessUnits={businessUnits} divisions={divisions} banks={banks} currencies={currencies} />
       <UsersSection />
       <DangerZone />

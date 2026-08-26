@@ -88,7 +88,10 @@ def cover_trend(
                     position_date=d,
                     total_receivables_sdg=recv,
                     total_dues_sdg=total_dues,
-                    gap_sdg=recv - total_dues,
+                    # dues - receivables: positive/"covered" when dues cover
+                    # receivables, negative when receivables exceed dues
+                    # (uncovered exposure) -- same convention as home.py.
+                    gap_sdg=total_dues - recv,
                 )
             )
     return points
