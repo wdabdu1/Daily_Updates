@@ -575,15 +575,13 @@ def fx_import_history(
         )
     col_map, header_row = found
 
-    usd_pair = _get_or_create_sdg_pair(db, "USD")
-    eur_pair = _get_or_create_sdg_pair(db, "EUR")
-    aed_pair = _get_or_create_sdg_pair(db, "AED")
-    db.flush()
-
-    imported = 0
-    updated = 0
+    # --- Phase 1: parse the whole sheet in memory, no DB access at all. ---
+    # A 200+ row file means up to 9 values/row to validate; doing that as
+    # plain Python first (instead of interleaved with DB writes, as this
+    # endpoint originally did) is what makes phase 2 below possible to run
+    # as a handful of queries instead of thousands.
     errors: list[schemas.ImportRowError] = []
-
+    parsed_rows: list[tuple[object, dict]] = []  # (rate_date, {key: Decimal})
     for r in range(header_row + 1, ws.max_row + 1):
         raw_date = ws.cell(row=r, column=col_map["date"]).value
         if raw_date is None:
@@ -611,28 +609,78 @@ def fx_import_history(
             )
             continue
 
-        entries = [
-            (usd_pair, "Market", values["usd_market"]),
-            (eur_pair, "Market", values["euro_market"]),
-            (aed_pair, "Market", values["aed_market"]),
-            (aed_pair, "CBOS", values["cbos_aed"]),
-            (usd_pair, "CBOS", values["cbos_usd"]),
-            (eur_pair, "CBOS", values["cbos_euro"]),
-            (aed_pair, "Pricing", values["pricing_aed"]),
-            (usd_pair, "Pricing", values["pricing_usd"]),
-            (eur_pair, "Pricing", values["pricing_euro"]),
-        ]
+        parsed_rows.append((rate_date, values))
+
+    imported = 0
+    updated = 0
+
+    if parsed_rows:
+        # --- Phase 2: one bulk write pass. ---
+        # The original version issued a SELECT + a SAVEPOINT per one of the
+        # 9 values on every row -- ~3,800+ individual round trips for a
+        # 212-day file. That's cheap against a local Postgres with
+        # near-zero latency (where this was first tested and looked
+        # instant), but against a real hosted DB the per-round-trip
+        # latency adds up to minutes -- long enough to hit a proxy/browser
+        # timeout and report "failed" even though the writes kept going
+        # and eventually committed, which is exactly what was observed in
+        # production. This phase instead does a handful of queries total:
+        # get-or-create the 3 pairs, ONE query to preload every existing
+        # FxRate row in the affected range, then pure in-memory
+        # add/update against the session before a single final commit.
+        usd_pair = _get_or_create_sdg_pair(db, "USD")
+        eur_pair = _get_or_create_sdg_pair(db, "EUR")
+        aed_pair = _get_or_create_sdg_pair(db, "AED")
+        db.flush()
+
+        pair_ids = [usd_pair.id, eur_pair.id, aed_pair.id]
+        dates = [d for d, _ in parsed_rows]
+        existing_rows = (
+            db.query(models.FxRate)
+            .filter(
+                models.FxRate.currency_pair_id.in_(pair_ids),
+                models.FxRate.rate_type.in_(SDG_RATE_TYPES),
+                models.FxRate.rate_date >= min(dates),
+                models.FxRate.rate_date <= max(dates),
+            )
+            .all()
+        )
+        existing_by_key = {(row.currency_pair_id, row.rate_type, row.rate_date): row for row in existing_rows}
+
         try:
-            with db.begin_nested():
+            for rate_date, values in parsed_rows:
+                entries = [
+                    (usd_pair, "Market", values["usd_market"]),
+                    (eur_pair, "Market", values["euro_market"]),
+                    (aed_pair, "Market", values["aed_market"]),
+                    (aed_pair, "CBOS", values["cbos_aed"]),
+                    (usd_pair, "CBOS", values["cbos_usd"]),
+                    (eur_pair, "CBOS", values["cbos_euro"]),
+                    (aed_pair, "Pricing", values["pricing_aed"]),
+                    (usd_pair, "Pricing", values["pricing_usd"]),
+                    (eur_pair, "Pricing", values["pricing_euro"]),
+                ]
                 for pair, rate_type, rate in entries:
-                    _row, was_update = _upsert_rate(db, pair, rate_type, rate_date, rate)
-                    if was_update:
+                    key = (pair.id, rate_type, rate_date)
+                    existing = existing_by_key.get(key)
+                    if existing:
+                        existing.rate = rate
+                        existing.is_manual_entry = True
                         updated += 1
                     else:
+                        new_row = models.FxRate(
+                            rate_date=rate_date,
+                            currency_pair_id=pair.id,
+                            rate_type=rate_type,
+                            rate=rate,
+                            is_manual_entry=True,
+                        )
+                        db.add(new_row)
+                        existing_by_key[key] = new_row
                         imported += 1
+            db.commit()
         except Exception as e:
-            errors.append(schemas.ImportRowError(row_number=r, reason=f"Couldn't save {rate_date}: {e}"))
-            continue
+            db.rollback()
+            raise HTTPException(500, f"Couldn't save this import -- nothing was written: {e}")
 
-    db.commit()
     return schemas.ImportResult(imported=imported, updated=updated, skipped=errors)

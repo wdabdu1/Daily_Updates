@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NumericFormat } from "react-number-format";
-import { api, downloadXlsx } from "../api/client";
+import { api, downloadXlsx, errMsg } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { formatSDG } from "../format";
 
@@ -112,13 +112,11 @@ function DuesSection() {
       setFile(null);
       refresh();
     } catch (e: any) {
-      const detail = e?.response?.data?.detail;
       setImportError(
-        typeof detail === "string" && detail
-          ? detail
-          : detail
-          ? JSON.stringify(detail)
-          : "Import failed -- the server didn't say why. Try again, and if it keeps happening, send this file over."
+        errMsg(
+          e,
+          "Import failed -- the server didn't say why. Try again, and if it keeps happening, send this file over."
+        )
       );
     } finally {
       setImporting(false);
@@ -144,8 +142,7 @@ function DuesSection() {
       setDraft({ ...emptyDraft, account_id: draft.account_id });
       refresh();
     } catch (e: any) {
-      const detail = e?.response?.data?.detail;
-      setAddError(typeof detail === "string" && detail ? detail : "Couldn't add this due.");
+      setAddError(errMsg(e, "Couldn't add this due."));
     } finally {
       setAddBusy(false);
     }
@@ -177,8 +174,7 @@ function DuesSection() {
       setEditingId(null);
       refresh();
     } catch (e: any) {
-      const detail = e?.response?.data?.detail;
-      setRowError(typeof detail === "string" && detail ? detail : "Couldn't update this due.");
+      setRowError(errMsg(e, "Couldn't update this due."));
     } finally {
       setEditBusy(false);
     }
@@ -191,8 +187,7 @@ function DuesSection() {
       await api.delete(`/api/dues/${d.id}`);
       refresh();
     } catch (e: any) {
-      const detail = e?.response?.data?.detail;
-      setRowError(typeof detail === "string" && detail ? detail : "Couldn't delete this due.");
+      setRowError(errMsg(e, "Couldn't delete this due."));
     }
   }
 

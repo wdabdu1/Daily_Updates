@@ -31,6 +31,37 @@ api.interceptors.response.use(
   }
 );
 
+/** Extract a human-readable message from a failed API call. Handles the
+ * three shapes an error can actually take: a plain string `detail` (most
+ * of this app's own HTTPException(...) calls), FastAPI's own 422
+ * validation-error shape (`detail` is a list of {loc, msg, type} objects --
+ * happens automatically when a request body doesn't match a Pydantic
+ * schema, which every previous per-page inline version of this helper
+ * silently swallowed into a generic "couldn't do X" message), or no
+ * response at all (network drop / proxy or browser timeout -- the request
+ * may still have gone through server-side even though this tab never
+ * heard back, which is a materially different situation from a clean
+ * error response and worth telling the user). */
+export function errMsg(e: any, fallback: string): string {
+  const detail = e?.response?.data?.detail;
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail) && detail.length) {
+    return detail
+      .map((d: any) => {
+        const field = Array.isArray(d?.loc) ? d.loc[d.loc.length - 1] : null;
+        const msg = d?.msg || JSON.stringify(d);
+        return field ? `${field}: ${msg}` : msg;
+      })
+      .join("; ");
+  }
+  if (detail) return JSON.stringify(detail);
+  if (!e?.response) {
+    return "No response came back from the server (connection dropped or timed out) -- it may" +
+      " still have gone through. Refresh and check before retrying.";
+  }
+  return fallback;
+}
+
 /** Trigger a browser download for an Excel export endpoint that returns a
  * binary xlsx stream (can't just be a plain <a href> because auth needs a
  * bearer header, not a cookie). */

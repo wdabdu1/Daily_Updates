@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, downloadXlsx } from "../api/client";
+import { api, downloadXlsx, errMsg } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 
 interface BusinessUnit {
@@ -42,11 +42,6 @@ interface Account {
   business_unit_name: string | null;
   division_name: string | null;
   bank_short_name: string | null;
-}
-
-function errMsg(e: any, fallback: string) {
-  const detail = e?.response?.data?.detail;
-  return typeof detail === "string" && detail ? detail : fallback;
 }
 
 // ---------------------------------------------------------------- Business Units
@@ -772,13 +767,11 @@ function FxImportSection() {
       setResult(res.data);
       setFile(null);
     } catch (e: any) {
-      const detail = e?.response?.data?.detail;
       setError(
-        typeof detail === "string" && detail
-          ? detail
-          : detail
-          ? JSON.stringify(detail)
-          : "Import failed -- the server didn't say why. Try again, and if it keeps happening, send this file over."
+        errMsg(
+          e,
+          "Import failed -- the server didn't say why. Try again, and if it keeps happening, send this file over."
+        )
       );
     } finally {
       setImporting(false);
@@ -863,6 +856,114 @@ function FxImportSection() {
 }
 
 // ---------------------------------------------------------------------- Accounts
+interface AccountDraft {
+  business_unit_id: string;
+  division_id: string;
+  bank_id: string;
+  account_name: string;
+  account_number: string;
+  currency: string;
+}
+
+// Hoisted to module scope deliberately -- this used to be defined INSIDE
+// AccountsSection's render body, which meant React saw a brand-new
+// component function on every keystroke (since typing updates `draft`/
+// `editDraft` state, which re-renders AccountsSection, which used to
+// redefine this function again). A new function identity at the same tree
+// position makes React treat it as a different component type and
+// remount the whole subtree -- including the text inputs -- which is
+// exactly what dropped focus after every single character typed into
+// Account Name. Defining it once, up here, keeps its identity stable
+// across re-renders so the inputs stay mounted and keep focus.
+function AccountDraftFields({
+  value,
+  onChange,
+  businessUnits,
+  divisions,
+  banks,
+  currencies,
+}: {
+  value: AccountDraft;
+  onChange: (v: AccountDraft) => void;
+  businessUnits: BusinessUnit[];
+  divisions: Division[];
+  banks: Bank[];
+  currencies: Currency[];
+}) {
+  const divisionsFor = (buId: string) =>
+    buId ? divisions.filter((d) => d.business_unit_id === Number(buId)) : [];
+
+  return (
+    <>
+      <div>
+        <label className="field-label">Business Unit</label>
+        <select
+          value={value.business_unit_id}
+          onChange={(e) => onChange({ ...value, business_unit_id: e.target.value, division_id: "" })}
+        >
+          <option value="">— none —</option>
+          {businessUnits.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="field-label">Division</label>
+        <select
+          value={value.division_id}
+          onChange={(e) => onChange({ ...value, division_id: e.target.value })}
+          disabled={!value.business_unit_id}
+        >
+          <option value="">— none —</option>
+          {divisionsFor(value.business_unit_id).map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="field-label">Bank</label>
+        <select value={value.bank_id} onChange={(e) => onChange({ ...value, bank_id: e.target.value })}>
+          {banks.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.short_name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="field-label">Account Name</label>
+        <input
+          value={value.account_name}
+          onChange={(e) => onChange({ ...value, account_name: e.target.value })}
+          placeholder="e.g. Treasury Main AED"
+        />
+      </div>
+      <div>
+        <label className="field-label">Account Number</label>
+        <input
+          value={value.account_number}
+          onChange={(e) => onChange({ ...value, account_number: e.target.value })}
+          placeholder="e.g. 1001-AED"
+        />
+      </div>
+      <div>
+        <label className="field-label">Currency</label>
+        <select value={value.currency} onChange={(e) => onChange({ ...value, currency: e.target.value })}>
+          {currencies.map((c) => (
+            <option key={c.code} value={c.code}>
+              {c.code}
+            </option>
+          ))}
+        </select>
+      </div>
+    </>
+  );
+}
+
 function AccountsSection({
   businessUnits,
   divisions,
@@ -899,11 +1000,6 @@ function AccountsSection({
       setDraft((d) => ({ ...d, currency: currencies.find((c) => c.code === "SDG")?.code || currencies[0].code }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [banks, currencies]);
-
-  function divisionsFor(buId: string) {
-    if (!buId) return [];
-    return divisions.filter((d) => d.business_unit_id === Number(buId));
-  }
 
   function toPayload(d: typeof emptyDraft) {
     return {
@@ -971,84 +1067,6 @@ function AccountsSection({
     }
   }
 
-  function DraftFields({
-    value,
-    onChange,
-  }: {
-    value: typeof emptyDraft;
-    onChange: (v: typeof emptyDraft) => void;
-  }) {
-    return (
-      <>
-        <div>
-          <label className="field-label">Business Unit</label>
-          <select
-            value={value.business_unit_id}
-            onChange={(e) => onChange({ ...value, business_unit_id: e.target.value, division_id: "" })}
-          >
-            <option value="">— none —</option>
-            {businessUnits.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="field-label">Division</label>
-          <select
-            value={value.division_id}
-            onChange={(e) => onChange({ ...value, division_id: e.target.value })}
-            disabled={!value.business_unit_id}
-          >
-            <option value="">— none —</option>
-            {divisionsFor(value.business_unit_id).map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="field-label">Bank</label>
-          <select value={value.bank_id} onChange={(e) => onChange({ ...value, bank_id: e.target.value })}>
-            {banks.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.short_name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="field-label">Account Name</label>
-          <input
-            value={value.account_name}
-            onChange={(e) => onChange({ ...value, account_name: e.target.value })}
-            placeholder="e.g. Treasury Main AED"
-          />
-        </div>
-        <div>
-          <label className="field-label">Account Number</label>
-          <input
-            value={value.account_number}
-            onChange={(e) => onChange({ ...value, account_number: e.target.value })}
-            placeholder="e.g. 1001-AED"
-          />
-        </div>
-        <div>
-          <label className="field-label">Currency</label>
-          <select value={value.currency} onChange={(e) => onChange({ ...value, currency: e.target.value })}>
-            {currencies.map((c) => (
-              <option key={c.code} value={c.code}>
-                {c.code}
-              </option>
-            ))}
-          </select>
-        </div>
-      </>
-    );
-  }
-
   return (
     <div className="card">
       <h2 className="section-title">Accounts</h2>
@@ -1075,7 +1093,14 @@ function AccountsSection({
               <tr key={a.id}>
                 <td colSpan={6}>
                   <div className="form-grid">
-                    <DraftFields value={editDraft} onChange={setEditDraft} />
+                    <AccountDraftFields
+                      value={editDraft}
+                      onChange={setEditDraft}
+                      businessUnits={businessUnits}
+                      divisions={divisions}
+                      banks={banks}
+                      currencies={currencies}
+                    />
                   </div>
                 </td>
                 <td>
@@ -1120,7 +1145,14 @@ function AccountsSection({
         </tbody>
       </table>
       <div className="form-grid" style={{ marginTop: "1rem" }}>
-        <DraftFields value={draft} onChange={setDraft} />
+        <AccountDraftFields
+          value={draft}
+          onChange={setDraft}
+          businessUnits={businessUnits}
+          divisions={divisions}
+          banks={banks}
+          currencies={currencies}
+        />
       </div>
       <button
         className="btn btn--primary"

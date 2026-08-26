@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { NumericFormat } from "react-number-format";
-import { api } from "../api/client";
+import { api, errMsg } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { formatPlain } from "../format";
 
@@ -148,8 +148,7 @@ export function FxRates() {
       // the currency selector needs to know about it too.
       api.get<CurrencyPair[]>("/api/settings/currency-pairs").then((res) => setPairs(res.data));
     } catch (e: any) {
-      const detail = e?.response?.data?.detail;
-      setBatchError(typeof detail === "string" && detail ? detail : "Couldn't save these rates.");
+      setBatchError(errMsg(e, "Couldn't save these rates."));
     } finally {
       setBatchBusy(false);
     }
@@ -175,8 +174,7 @@ export function FxRates() {
       setEditing(null);
       loadTable();
     } catch (e: any) {
-      const detail = e?.response?.data?.detail;
-      setRowError(typeof detail === "string" && detail ? detail : "Couldn't update this rate.");
+      setRowError(errMsg(e, "Couldn't update this rate."));
     } finally {
       setRowBusy(false);
     }
@@ -197,8 +195,7 @@ export function FxRates() {
       await api.delete(`/api/fx/rates/${id}`);
       loadTable();
     } catch (e: any) {
-      const detail = e?.response?.data?.detail;
-      setRowError(typeof detail === "string" && detail ? detail : "Couldn't delete this rate.");
+      setRowError(errMsg(e, "Couldn't delete this rate."));
     }
   }
 
