@@ -3,8 +3,9 @@ import os
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import DBAPIError
 
 from .routers import accounts, admin, analysis, auth, dues, fx, home, receivables, settings
 from .seed import init_db
@@ -34,6 +35,36 @@ app.include_router(dues.router)
 app.include_router(receivables.router)
 app.include_router(fx.router)
 app.include_router(analysis.router)
+
+
+# Every deliberate error in this app already goes out as an HTTPException
+# with a clear `detail` string (handled by FastAPI's own default handler,
+# untouched by this one -- it only matches exactly the base `Exception`
+# type, and Starlette resolves HTTPException's own registered handler
+# first). Without this, anything unanticipated -- a DB constraint the code
+# didn't check for, a bad cast, whatever -- fell through to Starlette's
+# bare-bones default: a 21-byte "Internal Server Error" plain-text body with
+# no detail at all, which cost real time to diagnose (a numeric-overflow
+# bug this app hit in production looked identical to a network timeout from
+# the client's side until the raw response headers were captured directly).
+# The full traceback still goes to the server log either way; this just
+# also puts the exception's own message in front of whoever hit it, so the
+# next time something like this happens the real cause is visible on the
+# first report instead of requiring a live repro session to track down.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    # A bare str(exc) on a SQLAlchemy DBAPIError includes the full SQL
+    # statement and every bound parameter value -- useful in the server log
+    # (still captured above via logger.exception) but far more than
+    # belongs in a message echoed back to the browser. exc.orig is just the
+    # underlying database driver's own error text (e.g. "numeric field
+    # overflow"), which is exactly the useful part.
+    message = str(exc.orig) if isinstance(exc, DBAPIError) and exc.orig is not None else str(exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Unexpected server error ({type(exc).__name__}): {message}"},
+    )
 
 
 @app.on_event("startup")

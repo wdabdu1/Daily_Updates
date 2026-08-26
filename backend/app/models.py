@@ -133,7 +133,12 @@ class BankDue(Base):
     account_id = Column(Integer, ForeignKey("master_accounts.id", ondelete="CASCADE"))
     due_date = Column(Date)
     facility_type = Column(String(100))
-    amount = Column(Numeric(15, 2))
+    # 20 digits before the decimal point -- SDG amounts routinely run into
+    # the hundreds of millions/billions given the currency's devaluation, so
+    # this needs real headroom (see schema_upgrades.py: this column started
+    # narrower on the live Postgres table and widening it here alone didn't
+    # take effect there, since create_all() never ALTERs an existing column).
+    amount = Column(Numeric(20, 2))
     status = Column(String(50), default="Active")
 
     account = relationship("MasterAccount")
@@ -145,7 +150,7 @@ class ReceivableDaily(Base):
     id = Column(Integer, primary_key=True)
     position_date = Column(Date, nullable=False, default=date.today)
     account_id = Column(Integer, ForeignKey("master_accounts.id", ondelete="CASCADE"))
-    amount = Column(Numeric(15, 2), nullable=False, default=0)
+    amount = Column(Numeric(20, 2), nullable=False, default=0)
 
     account = relationship("MasterAccount")
 
