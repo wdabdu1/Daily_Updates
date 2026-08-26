@@ -88,4 +88,57 @@ def apply_schema_upgrades(engine: Engine) -> list[str]:
             f" numeric({target_precision}, {target_scale}) -- large amounts no longer overflow it."
         )
 
+    # Fix a second-order effect of the legacy `master_accounts` rename in
+    # migrate_legacy.py: `prepare_legacy_rename()` renames the OLD
+    # `master_accounts` table to `master_accounts_legacy` *before*
+    # `create_all()` builds a brand-new `master_accounts` table under the
+    # now-freed name. Postgres foreign keys track the referenced table by
+    # its internal identity, not by name -- so any FK that already existed
+    # on another table from the original legacy app (e.g. the legacy app's
+    # own `bank_dues.account_id -> master_accounts.id` constraint) follows
+    # the rename and keeps pointing at the OLD table under its new name,
+    # never at the new live `master_accounts` table this app actually
+    # writes accounts into going forward. A due/receivable on any account
+    # created *after* the migration ran (a fresh id that only ever existed
+    # in the new table) then fails with a foreign key violation reported
+    # against `master_accounts_legacy` -- confirmed against a real
+    # production error (`account_id=3 is not present in table
+    # "master_accounts_legacy"` on a genuinely valid, existing account).
+    # Only re-point a constraint that is actually misdirected (never touch
+    # one already correctly pointing at `master_accounts`). Safe to do here
+    # -- this runs after run_legacy_migration() above, by which point every
+    # legacy master_accounts row has already been copied into the new
+    # table with the same id, so no existing bank_dues/receivables_daily
+    # row can violate the corrected constraint.
+    ACCOUNT_FK_TARGETS = [
+        ("bank_dues", "account_id", "CASCADE"),
+        ("receivables_daily", "account_id", "CASCADE"),
+    ]
+    for table, column, ondelete in ACCOUNT_FK_TARGETS:
+        if table not in inspector.get_table_names():
+            continue
+        for fk in inspector.get_foreign_keys(table):
+            if fk.get("constrained_columns") != [column]:
+                continue
+            referred_table = fk.get("referred_table")
+            if referred_table == "master_accounts":
+                continue  # already correct
+            constraint_name = fk.get("name") or f"{table}_{column}_fkey"
+            with engine.begin() as conn:
+                if fk.get("name"):
+                    conn.execute(text(f"ALTER TABLE {table} DROP CONSTRAINT {fk['name']}"))
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {table} ADD CONSTRAINT {constraint_name}"
+                        f" FOREIGN KEY ({column}) REFERENCES master_accounts (id)"
+                        f" ON DELETE {ondelete}"
+                    )
+                )
+            report.append(
+                f"Re-pointed {table}.{column}'s foreign key from '{referred_table}' to"
+                " 'master_accounts' -- it was still targeting the renamed legacy table"
+                " after migration, which rejected any due/receivable on an account"
+                " created after the migration ran."
+            )
+
     return report
