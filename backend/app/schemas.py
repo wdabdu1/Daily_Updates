@@ -246,6 +246,67 @@ class ReceivableSaveRequest(BaseModel):
     rows: list[ReceivableRow]
 
 
+class DivisionOption(BaseModel):
+    """A division as a receivables-table column / form row -- labeled with
+    its Business Unit since Division names are only unique within a BU, not
+    globally (two different BUs can each have a "Delta" division)."""
+
+    id: int
+    name: str
+    business_unit_id: int
+    business_unit_name: str
+
+
+class DivisionReceivableFormRow(BaseModel):
+    division_id: int
+    division_name: str
+    business_unit_name: str
+    default_amount: Decimal
+    default_amount_date: Optional[date] = None
+    # True when default_amount_date == the requested position_date, i.e. an
+    # entry for that exact day already exists and saving will UPDATE it
+    # rather than fall back to an earlier day's figure as a starting point.
+    is_recorded_for_date: bool
+
+
+class DivisionReceivableRow(BaseModel):
+    division_id: int
+    amount: Decimal
+
+
+class DivisionReceivableSaveRequest(BaseModel):
+    position_date: date
+    rows: list[DivisionReceivableRow]
+
+
+class DivisionReceivableTableRow(BaseModel):
+    position_date: date
+    # Keyed by division id (as a string -- JSON object keys are always
+    # strings), amount omitted/absent for a division with no entry on this
+    # exact date (this table shows real recorded entries only, it does not
+    # carry-forward fill every calendar day the way FX Rates does --
+    # receivables snapshots are naturally episodic, not daily-guaranteed).
+    amounts: dict[str, Decimal]
+    total: Decimal
+
+
+class FxSnapshotRate(BaseModel):
+    """One rate-type's (Market/CBOS/Pricing) latest known USD/SDG rate, plus
+    the equivalent AED/SDG rate for the same rate-type -- the Home page
+    shows USD prominently and AED underneath in a smaller/greyer style.
+    Either side (or both) can be None if that pair/rate-type has no entry
+    on file yet -- the rate-type still renders, just without that figure.
+    usd_rate_date and aed_rate_date can differ from each other (each is the
+    latest entry for its own pair) so the frontend can show a per-figure
+    "as of" if it ever needs to."""
+
+    rate_type: str  # Market | CBOS | Pricing
+    usd_rate: Optional[Decimal] = None
+    usd_rate_date: Optional[date] = None
+    aed_rate: Optional[Decimal] = None
+    aed_rate_date: Optional[date] = None
+
+
 class HomeSummary(BaseModel):
     as_of: Optional[date]
     total_receivables_sdg: Decimal
@@ -255,9 +316,17 @@ class HomeSummary(BaseModel):
     usd_sdg_rate: Optional[Decimal]
     usd_sdg_rate_date: Optional[date]
     gap_usd_equivalent: Optional[Decimal]
+    # USD equivalents of the two top-line totals, using the same latest
+    # USD/SDG Market rate as gap_usd_equivalent -- None when no rate is on
+    # file yet (mirrors gap_usd_equivalent's own None case).
+    total_receivables_usd: Optional[Decimal] = None
+    total_dues_usd: Optional[Decimal] = None
     status: str  # "covered" | "shortfall" | "no_data"
     unconverted_account_count: int
     notes: Optional[str] = None
+    # Today's FX snapshot cards: one row per rate-type that has at least a
+    # USD or AED figure on file. Always in Market, CBOS, Pricing order.
+    fx_snapshot: list[FxSnapshotRate] = []
 
 
 class ImportRowError(BaseModel):
@@ -273,13 +342,54 @@ class ImportResult(BaseModel):
 
 class CoverBreakdownRow(BaseModel):
     group_label: str
+    # None (not zero) when this grouping dimension has no meaningful
+    # receivables figure to show -- specifically, grouping "by Bank": Dues
+    # are still bank-linked via their account, but receivables are now
+    # recorded per Division with no bank concept at all, so there's nothing
+    # real to sum for a bank row. Grouping by Division or Business Unit
+    # always has a real figure (Business Unit is a roll-up of its
+    # divisions' receivables). The frontend renders None as "—" and omits
+    # the gap/status coloring for that row rather than implying a real $0.
+    total_receivables_sdg: Optional[Decimal] = None
+    total_dues_sdg: Decimal
+    gap_sdg: Optional[Decimal] = None
+    status: Optional[str] = None
+    # Each group's receivables as a % of company-wide total receivables --
+    # lets you see how much of the overall exposure a group represents even
+    # when Dues can't yet be attributed the same way.
+    pct_of_total_receivables: Optional[Decimal] = None
+
+
+class CoverBreakdownResponse(BaseModel):
+    rows: list[CoverBreakdownRow]
+    # Company-wide totals for the same grouping dimension, so the UI can
+    # render a "Total" row at the end without re-summing client-side.
+    total: CoverBreakdownRow
+    receivables_applicable: bool
+
+
+class ReceivablesContributionRow(BaseModel):
+    group_label: str
+    total_receivables_sdg: Decimal
+    pct_of_total_receivables: Optional[Decimal] = None
+    total_dues_sdg: Decimal
+
+
+class ReceivablesContributionResponse(BaseModel):
+    rows: list[ReceivablesContributionRow]
+    total: ReceivablesContributionRow
+
+
+class CoverSnapshotSlice(BaseModel):
+    label: str
+    amount: Decimal
+    color: str
+
+
+class CoverSnapshot(BaseModel):
+    position_date: Optional[date]
+    receivables_by_division: list[CoverSnapshotSlice]
+    dues_by_bank: list[CoverSnapshotSlice]
     total_receivables_sdg: Decimal
     total_dues_sdg: Decimal
     gap_sdg: Decimal
-    status: str
-    # Each group's receivables as a % of company-wide total receivables --
-    # lets you see how much of the overall exposure a group represents even
-    # when Dues can't be reliably attributed to the same group (e.g. Bank
-    # Dues data that only identifies the Bank, not the Business
-    # Unit/Division that will ultimately cover it).
-    pct_of_total_receivables: Optional[Decimal] = None

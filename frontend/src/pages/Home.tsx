@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import { formatPct, formatSDG, formatUSD } from "../format";
+import { formatPlain, formatSDG, formatUSD } from "../format";
+
+interface FxSnapshotRate {
+  rate_type: string;
+  usd_rate: string | null;
+  usd_rate_date: string | null;
+  aed_rate: string | null;
+  aed_rate_date: string | null;
+}
 
 interface HomeSummary {
   as_of: string | null;
@@ -11,21 +19,53 @@ interface HomeSummary {
   usd_sdg_rate: string | null;
   usd_sdg_rate_date: string | null;
   gap_usd_equivalent: string | null;
+  total_receivables_usd: string | null;
+  total_dues_usd: string | null;
   status: "covered" | "shortfall" | "no_data";
   unconverted_account_count: number;
   notes: string | null;
+  fx_snapshot: FxSnapshotRate[];
 }
 
-interface BreakdownRow {
+interface CoverBreakdownRow {
   group_label: string;
-  total_receivables_sdg: string;
+  total_receivables_sdg: string | null;
   total_dues_sdg: string;
-  gap_sdg: string;
-  status: "covered" | "shortfall";
+  gap_sdg: string | null;
+  status: "covered" | "shortfall" | null;
   pct_of_total_receivables: string | null;
 }
+interface CoverBreakdownResponse {
+  rows: CoverBreakdownRow[];
+  total: CoverBreakdownRow;
+  receivables_applicable: boolean;
+}
 
-type GroupBy = "business_unit" | "division" | "bank";
+interface ReceivablesContributionRow {
+  group_label: string;
+  total_receivables_sdg: string;
+  pct_of_total_receivables: string | null;
+  total_dues_sdg: string;
+}
+interface ReceivablesContributionResponse {
+  rows: ReceivablesContributionRow[];
+  total: ReceivablesContributionRow;
+}
+
+type CoverGroupBy = "bank" | "division" | "business_unit";
+type ContributionGroupBy = "division" | "business_unit";
+
+const FX_RATE_TYPES = ["Market", "CBOS", "Pricing"];
+
+const COVER_GROUP_LABELS: Record<CoverGroupBy, string> = {
+  bank: "Bank",
+  division: "Division",
+  business_unit: "Business Unit",
+};
+const CONTRIBUTION_GROUP_LABELS: Record<ContributionGroupBy, string> = {
+  division: "Division",
+  business_unit: "Business Unit",
+};
 
 // Plain proportion (no +/- sign, unlike formatPct which is used for gap_pct
 // where the sign is meaningful).
@@ -36,24 +76,37 @@ function formatShare(value: string | null): string {
   return `${n.toFixed(2)}%`;
 }
 
+function dash(value: string | null, fmt: (v: string) => string): string {
+  return value === null ? "—" : fmt(value);
+}
+
 export function Home() {
   const [summary, setSummary] = useState<HomeSummary | null>(null);
-  const [breakdown, setBreakdown] = useState<BreakdownRow[]>([]);
-  const [groupBy, setGroupBy] = useState<GroupBy>("business_unit");
+  const [coverGroupBy, setCoverGroupBy] = useState<CoverGroupBy>("bank");
+  const [coverBreakdown, setCoverBreakdown] = useState<CoverBreakdownResponse | null>(null);
+  const [contribGroupBy, setContribGroupBy] = useState<ContributionGroupBy>("division");
+  const [contribution, setContribution] = useState<ReceivablesContributionResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([
-      api.get<HomeSummary>("/api/home/summary"),
-      api.get<BreakdownRow[]>(`/api/home/breakdown?group_by=${groupBy}`),
-    ])
-      .then(([s, b]) => {
-        setSummary(s.data);
-        setBreakdown(b.data);
-      })
+    api
+      .get<HomeSummary>("/api/home/summary")
+      .then((res) => setSummary(res.data))
       .finally(() => setLoading(false));
-  }, [groupBy]);
+  }, []);
+
+  useEffect(() => {
+    api
+      .get<CoverBreakdownResponse>(`/api/home/breakdown?group_by=${coverGroupBy}`)
+      .then((res) => setCoverBreakdown(res.data));
+  }, [coverGroupBy]);
+
+  useEffect(() => {
+    api
+      .get<ReceivablesContributionResponse>(`/api/home/receivables-contribution?group_by=${contribGroupBy}`)
+      .then((res) => setContribution(res.data));
+  }, [contribGroupBy]);
 
   if (loading && !summary) {
     return (
@@ -65,10 +118,9 @@ export function Home() {
 
   if (!summary) return null;
 
-  const maxAbsGap = Math.max(
-    1,
-    ...breakdown.map((r) => Math.abs(parseFloat(r.gap_sdg)))
-  );
+  const gap = parseFloat(summary.gap_sdg);
+  const isCovered = gap >= 0;
+  const fxByType = new Map(summary.fx_snapshot.map((f) => [f.rate_type, f]));
 
   return (
     <div className="page">
@@ -79,6 +131,21 @@ export function Home() {
             ? `Receivables as of ${summary.as_of}`
             : "No receivables have been recorded yet"}
         </p>
+      </div>
+
+      <div className="stat-grid" style={{ marginBottom: "1.25rem" }}>
+        {FX_RATE_TYPES.map((rt) => {
+          const f = fxByType.get(rt);
+          return (
+            <div className="stat-card" key={rt}>
+              <p className="stat-card__label">{rt} Rate — USD/SDG</p>
+              <p className="stat-card__value">{f?.usd_rate ? formatPlain(f.usd_rate) : "—"}</p>
+              <p className="stat-card__meta" style={{ fontSize: "0.78rem" }}>
+                AED/SDG: {f?.aed_rate ? formatPlain(f.aed_rate) : "—"}
+              </p>
+            </div>
+          );
+        })}
       </div>
 
       {summary.status === "shortfall" && (
@@ -103,100 +170,125 @@ export function Home() {
         <div className="stat-card">
           <p className="stat-card__label">Total Receivables</p>
           <p className="stat-card__value">{formatSDG(summary.total_receivables_sdg)}</p>
+          <p className="stat-card__meta">{formatUSD(summary.total_receivables_usd)}</p>
         </div>
         <div className="stat-card">
           <p className="stat-card__label">Active Bank Dues</p>
           <p className="stat-card__value">{formatSDG(summary.total_dues_sdg)}</p>
+          <p className="stat-card__meta">{formatUSD(summary.total_dues_usd)}</p>
         </div>
         <div className="stat-card">
-          <p className="stat-card__label">Cover (Dues − Receivables)</p>
-          <p className="stat-card__value">{formatSDG(summary.gap_sdg)}</p>
-          <p className="stat-card__meta">
-            <span
-              className={
-                "badge " +
-                (parseFloat(summary.gap_sdg) >= 0 ? "badge--positive" : "badge--negative")
-              }
-            >
-              {formatPct(summary.gap_pct)}
-            </span>
+          <p className="stat-card__label">Available Cover</p>
+          <p
+            className="stat-card__value"
+            style={{ color: isCovered ? "var(--color-positive)" : "var(--color-negative)" }}
+          >
+            {formatSDG(summary.gap_sdg)}
           </p>
-        </div>
-        <div className="stat-card">
-          <p className="stat-card__label">Gap, USD Equivalent</p>
-          <p className="stat-card__value">{formatUSD(summary.gap_usd_equivalent)}</p>
-          <p className="stat-card__meta">
-            {summary.usd_sdg_rate
-              ? `USD/SDG ${summary.usd_sdg_rate} as of ${summary.usd_sdg_rate_date}`
-              : "No USD/SDG rate recorded yet"}
-          </p>
+          <p className="stat-card__meta">{formatUSD(summary.gap_usd_equivalent)}</p>
         </div>
       </div>
 
       <div className="card">
         <div className="toolbar">
           <h2 className="section-title" style={{ marginBottom: 0 }}>
-            Cover by {groupBy === "business_unit" ? "Business Unit" : groupBy === "division" ? "Division" : "Bank"}
+            Cover by {COVER_GROUP_LABELS[coverGroupBy]}
           </h2>
           <div className="filters">
-            <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupBy)}>
-              <option value="business_unit">Business Unit</option>
-              <option value="division">Division</option>
+            <select value={coverGroupBy} onChange={(e) => setCoverGroupBy(e.target.value as CoverGroupBy)}>
               <option value="bank">Bank</option>
+              <option value="division">Division</option>
+              <option value="business_unit">Business Unit</option>
             </select>
           </div>
         </div>
-
-        {breakdown.length === 0 ? (
+        <p className="muted" style={{ marginTop: 0 }}>
+          {coverGroupBy === "bank"
+            ? "Active Dues distribution by Bank. Receivables have no bank concept (they're recorded per Division), so Receivables/Gap aren't shown here — switch to Division or Business Unit for the full comparison."
+            : "A unit in shortfall while the company total is covered means another unit is effectively subsidizing it."}
+        </p>
+        {!coverBreakdown || coverBreakdown.rows.length === 0 ? (
           <div className="empty-state">No accounts registered yet.</div>
         ) : (
-          <div>
-            {breakdown.map((row) => {
-              const gap = parseFloat(row.gap_sdg);
-              const widthPct = Math.min(100, (Math.abs(gap) / maxAbsGap) * 100);
-              return (
-                <div className="bar-row" key={row.group_label}>
-                  <div className="bar-row__label" title={row.group_label}>
-                    {row.group_label}
-                  </div>
-                  <div className="bar-track">
-                    <div
-                      className={"bar-fill " + (gap >= 0 ? "bar-fill--positive" : "bar-fill--negative")}
-                      style={{ width: `${widthPct}%` }}
-                    />
-                  </div>
-                  <div className="bar-row__value">{formatSDG(row.gap_sdg)}</div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        <p className="muted" style={{ fontSize: "0.82rem", marginTop: "0.75rem" }}>
-          A unit in shortfall while the company total is covered means another unit is
-          effectively subsidizing it — see Analysis for the full drill-down.
-        </p>
-      </div>
-
-      {breakdown.length > 0 && (
-        <div className="card">
-          <h2 className="section-title">Receivables Contribution</h2>
-          <p className="muted" style={{ marginTop: 0 }}>
-            How much each {groupBy === "business_unit" ? "business unit" : groupBy === "division" ? "division" : "bank"}{" "}
-            contributes to total receivables — useful when Dues can't yet be attributed the same
-            way (an "Unassigned" row means those dues are only linked to a Bank/Account so far, not
-            a Business Unit or Division).
-          </p>
           <table className="data-table">
             <thead>
               <tr>
-                <th>{groupBy === "business_unit" ? "Business Unit" : groupBy === "division" ? "Division" : "Bank"}</th>
+                <th>{COVER_GROUP_LABELS[coverGroupBy]}</th>
+                <th className="numeric">Active Dues</th>
+                <th className="numeric">Receivables</th>
+                <th className="numeric">Gap</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {coverBreakdown.rows.map((row) => (
+                <tr key={row.group_label}>
+                  <td>{row.group_label}</td>
+                  <td className="numeric">{formatSDG(row.total_dues_sdg)}</td>
+                  <td className="numeric">{dash(row.total_receivables_sdg, formatSDG)}</td>
+                  <td className="numeric">{dash(row.gap_sdg, formatSDG)}</td>
+                  <td>
+                    {row.status ? (
+                      <span className={"badge " + (row.status === "covered" ? "badge--positive" : "badge--negative")}>
+                        {row.status === "covered" ? "Covered" : "Shortfall"}
+                      </span>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              <tr style={{ fontWeight: 700 }}>
+                <td>{coverBreakdown.total.group_label}</td>
+                <td className="numeric">{formatSDG(coverBreakdown.total.total_dues_sdg)}</td>
+                <td className="numeric">{dash(coverBreakdown.total.total_receivables_sdg, formatSDG)}</td>
+                <td className="numeric">{dash(coverBreakdown.total.gap_sdg, formatSDG)}</td>
+                <td>
+                  {coverBreakdown.total.status ? (
+                    <span className={"badge " + (coverBreakdown.total.status === "covered" ? "badge--positive" : "badge--negative")}>
+                      {coverBreakdown.total.status === "covered" ? "Covered" : "Shortfall"}
+                    </span>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="toolbar">
+          <h2 className="section-title" style={{ marginBottom: 0 }}>
+            Receivables Contribution by {CONTRIBUTION_GROUP_LABELS[contribGroupBy]}
+          </h2>
+          <div className="filters">
+            <select value={contribGroupBy} onChange={(e) => setContribGroupBy(e.target.value as ContributionGroupBy)}>
+              <option value="division">Division</option>
+              <option value="business_unit">Business Unit</option>
+            </select>
+          </div>
+        </div>
+        <p className="muted" style={{ marginTop: 0 }}>
+          How much each {contribGroupBy === "division" ? "division" : "business unit"} contributes to
+          total receivables. Dues with no {contribGroupBy === "division" ? "division" : "business unit"} link
+          land in a trailing "Unassigned" row rather than being dropped.
+        </p>
+        {!contribution || contribution.rows.length === 0 ? (
+          <div className="empty-state">No divisions registered yet.</div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>{CONTRIBUTION_GROUP_LABELS[contribGroupBy]}</th>
                 <th className="numeric">Receivables</th>
                 <th className="numeric">% of Total Receivables</th>
                 <th className="numeric">Active Dues</th>
               </tr>
             </thead>
             <tbody>
-              {breakdown.map((row) => (
+              {contribution.rows.map((row) => (
                 <tr key={row.group_label}>
                   <td>{row.group_label}</td>
                   <td className="numeric">{formatSDG(row.total_receivables_sdg)}</td>
@@ -204,10 +296,16 @@ export function Home() {
                   <td className="numeric">{formatSDG(row.total_dues_sdg)}</td>
                 </tr>
               ))}
+              <tr style={{ fontWeight: 700 }}>
+                <td>{contribution.total.group_label}</td>
+                <td className="numeric">{formatSDG(contribution.total.total_receivables_sdg)}</td>
+                <td className="numeric">{formatShare(contribution.total.pct_of_total_receivables)}</td>
+                <td className="numeric">{formatSDG(contribution.total.total_dues_sdg)}</td>
+              </tr>
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

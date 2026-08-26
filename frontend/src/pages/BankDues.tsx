@@ -31,17 +31,26 @@ interface ImportResult {
   skipped: { row_number: number; reason: string }[];
 }
 
-interface ReceivableFormRow {
-  account_id: number;
+interface DivisionOption {
+  id: number;
+  name: string;
+  business_unit_id: number;
   business_unit_name: string;
+}
+
+interface DivisionReceivableFormRow {
+  division_id: number;
   division_name: string;
-  bank_short_name: string;
-  account_name: string;
-  account_number: string;
-  currency: string;
+  business_unit_name: string;
   default_amount: string;
   default_amount_date: string | null;
   is_recorded_for_date: boolean;
+}
+
+interface DivisionReceivableTableRow {
+  position_date: string;
+  amounts: Record<string, string>;
+  total: string;
 }
 
 function todayStr() {
@@ -51,6 +60,14 @@ function todayStr() {
 function accountLabel(a: AccountOption) {
   const bu = a.business_unit_name ? ` -- ${a.business_unit_name}` : "";
   return `${a.bank_short_name || "?"} / ${a.account_name} (${a.account_number})${bu}`;
+}
+
+// A due is "overdue" once its date has passed and it's still Active (i.e.
+// nobody marked it settled/paid in time) -- purely a visual flag here,
+// Settled dues already drop out of every total server-side (see home.py /
+// analysis.py's `status == "Active"` filters) once "Mark Settled" is used.
+function isOverdue(d: BankDue): boolean {
+  return d.status === "Active" && !!d.due_date && d.due_date < todayStr();
 }
 
 function DuesSection() {
@@ -320,7 +337,7 @@ function DuesSection() {
                   </td>
                 </tr>
               ) : (
-                <tr key={d.id}>
+                <tr key={d.id} style={isOverdue(d) ? { background: "var(--color-negative-bg)" } : undefined}>
                   <td>{d.business_unit_name || "Unassigned"}</td>
                   <td>{d.division_name || "—"}</td>
                   <td>{d.bank_short_name}</td>
@@ -329,8 +346,11 @@ function DuesSection() {
                   <td>{d.facility_type}</td>
                   <td className="numeric">{formatSDG(d.amount)}</td>
                   <td>
-                    <span className={"badge " + (d.status === "Active" ? "badge--negative" : "badge--neutral")}>
-                      {d.status}
+                    <span
+                      className={"badge " + (d.status === "Active" ? "badge--negative" : "badge--neutral")}
+                      title={isOverdue(d) ? "Past its due date and still Active" : undefined}
+                    >
+                      {isOverdue(d) ? "Overdue" : d.status}
                     </span>
                   </td>
                   {canWrite && (
@@ -417,42 +437,60 @@ function DuesSection() {
   );
 }
 
-function ReceivablesSection() {
+function DivisionReceivablesSection() {
   const { canWrite } = useAuth();
+  const [divisions, setDivisions] = useState<DivisionOption[]>([]);
+  const [tableRows, setTableRows] = useState<DivisionReceivableTableRow[]>([]);
+  const [loadingTable, setLoadingTable] = useState(true);
+
   const [editing, setEditing] = useState(false);
   const [positionDate, setPositionDate] = useState(todayStr());
-  const [rows, setRows] = useState<ReceivableFormRow[]>([]);
+  const [formRows, setFormRows] = useState<DivisionReceivableFormRow[]>([]);
   const [amounts, setAmounts] = useState<Record<number, string>>({});
-  const [loading, setLoading] = useState(false);
+  const [loadingForm, setLoadingForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
 
+  function refreshTable() {
+    setLoadingTable(true);
+    return api
+      .get<DivisionReceivableTableRow[]>("/api/receivables/divisions/table")
+      .then((res) => setTableRows(res.data))
+      .finally(() => setLoadingTable(false));
+  }
+
+  useEffect(() => {
+    api.get<DivisionOption[]>("/api/receivables/divisions/list").then((res) => setDivisions(res.data));
+    refreshTable();
+  }, []);
+
   async function startUpdate() {
-    setLoading(true);
+    setLoadingForm(true);
     setSaved(null);
     try {
-      const res = await api.get<ReceivableFormRow[]>("/api/receivables/form", {
+      const res = await api.get<DivisionReceivableFormRow[]>("/api/receivables/divisions/form", {
         params: { position_date: positionDate },
       });
-      setRows(res.data);
+      setFormRows(res.data);
       const initial: Record<number, string> = {};
-      res.data.forEach((r) => (initial[r.account_id] = r.default_amount));
+      res.data.forEach((r) => (initial[r.division_id] = r.default_amount));
       setAmounts(initial);
       setEditing(true);
     } finally {
-      setLoading(false);
+      setLoadingForm(false);
     }
   }
 
   async function save() {
     setSaving(true);
     try {
-      await api.post("/api/receivables/save", {
+      await api.post("/api/receivables/divisions/save", {
         position_date: positionDate,
-        rows: rows.map((r) => ({ account_id: r.account_id, amount: amounts[r.account_id] || "0" })),
+        rows: formRows.map((r) => ({ division_id: r.division_id, amount: amounts[r.division_id] || "0" })),
       });
-      setSaved(`Saved as the ${positionDate} receivables position.`);
+      setSaved(`Saved as the ${positionDate} division position.`);
       setEditing(false);
+      refreshTable();
     } finally {
       setSaving(false);
     }
@@ -462,16 +500,17 @@ function ReceivablesSection() {
 
   return (
     <div className="card">
-      <h2 className="section-title">Today's Receivables</h2>
+      <h2 className="section-title">Division Receivables</h2>
       <p className="muted" style={{ marginTop: 0 }}>
-        This feeds the Home page's coverage comparison. Pick a date (defaults to today) and start
-        an update to see every account prefilled with the most recent amount recorded on or
-        before that date -- adjust what's changed, and save. Pick a past date to reopen and
-        correct that day's entries specifically.
+        Each division's total accumulated cash position -- across whichever banks it holds it in,
+        or cash in hand -- recorded as a single SDG figure rather than tied to one bank/account.
+        This feeds the Home page's coverage comparison. Pick a date (defaults to today), use
+        Today's Update to prefill every division with its most recently recorded amount, adjust
+        what's changed, and save -- the record is added to the history table below.
       </p>
       {saved && <div className="alert alert--positive">{saved}</div>}
       {!editing && canWrite && (
-        <div style={{ display: "flex", gap: "0.75rem", alignItems: "flex-end" }}>
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "flex-end", marginBottom: "1.5rem" }}>
           <div>
             <label className="field-label">Date</label>
             <input
@@ -481,9 +520,14 @@ function ReceivablesSection() {
               onChange={(e) => setPositionDate(e.target.value)}
             />
           </div>
-          <button className="btn btn--primary" onClick={startUpdate} disabled={loading}>
-            {loading ? "Loading..." : isToday ? "Start Update" : "Edit This Day"}
+          <button className="btn btn--primary" onClick={startUpdate} disabled={loadingForm || divisions.length === 0}>
+            {loadingForm ? "Loading..." : isToday ? "Today's Update" : "Edit This Day"}
           </button>
+          {divisions.length === 0 && (
+            <p className="muted" style={{ margin: 0 }}>
+              No divisions registered yet -- add one under Settings.
+            </p>
+          )}
         </div>
       )}
       {editing && (
@@ -492,31 +536,23 @@ function ReceivablesSection() {
             Editing the position for <strong>{positionDate}</strong>
             {isToday ? "" : " (a past day)"}.
           </p>
-          {rows.length === 0 ? (
-            <div className="empty-state">No accounts registered yet.</div>
+          {formRows.length === 0 ? (
+            <div className="empty-state">No divisions registered yet.</div>
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
                   <th>Business Unit</th>
                   <th>Division</th>
-                  <th>Bank</th>
-                  <th>Account</th>
-                  <th>Currency</th>
                   <th className="numeric">Last Recorded</th>
-                  <th className="numeric">{isToday ? "Today's Amount" : "Amount for This Day"}</th>
+                  <th className="numeric">{isToday ? "Today's Position" : "Position for This Day"}</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
-                  <tr key={r.account_id}>
+                {formRows.map((r) => (
+                  <tr key={r.division_id}>
                     <td>{r.business_unit_name}</td>
                     <td>{r.division_name}</td>
-                    <td>{r.bank_short_name}</td>
-                    <td>
-                      {r.account_name} ({r.account_number})
-                    </td>
-                    <td>{r.currency}</td>
                     <td className="numeric">
                       {r.is_recorded_for_date
                         ? "(already recorded for this day)"
@@ -529,9 +565,9 @@ function ReceivablesSection() {
                         decimalScale={2}
                         allowNegative={false}
                         inputMode="decimal"
-                        value={amounts[r.account_id] ?? ""}
+                        value={amounts[r.division_id] ?? ""}
                         onValueChange={(v) =>
-                          setAmounts((prev) => ({ ...prev, [r.account_id]: v.value }))
+                          setAmounts((prev) => ({ ...prev, [r.division_id]: v.value }))
                         }
                       />
                     </td>
@@ -541,7 +577,7 @@ function ReceivablesSection() {
             </table>
           )}
           <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem" }}>
-            <button className="btn btn--primary" onClick={save} disabled={saving || rows.length === 0}>
+            <button className="btn btn--primary" onClick={save} disabled={saving || formRows.length === 0}>
               {saving ? "Saving..." : "Save"}
             </button>
             <button className="btn btn--ghost" onClick={() => setEditing(false)} disabled={saving}>
@@ -550,6 +586,52 @@ function ReceivablesSection() {
           </div>
         </>
       )}
+
+      <div style={{ marginTop: "1.5rem", paddingTop: "1.5rem", borderTop: "1px solid var(--color-border)" }}>
+        <p className="field-label" style={{ marginBottom: "0.75rem" }}>
+          History
+        </p>
+        {loadingTable ? (
+          <p className="muted">Loading...</p>
+        ) : tableRows.length === 0 ? (
+          <div className="empty-state">No division positions recorded yet.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  {divisions.map((d) => (
+                    <th className="numeric" key={d.id} title={d.business_unit_name}>
+                      {d.name}
+                    </th>
+                  ))}
+                  <th className="numeric">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tableRows.map((row) => (
+                  <tr key={row.position_date}>
+                    <td>{row.position_date}</td>
+                    {divisions.map((d) => (
+                      <td className="numeric" key={d.id}>
+                        {row.amounts[String(d.id)] !== undefined ? (
+                          formatSDG(row.amounts[String(d.id)])
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+                    ))}
+                    <td className="numeric" style={{ fontWeight: 700 }}>
+                      {formatSDG(row.total)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -560,11 +642,11 @@ export function BankDues() {
       <div className="page__header">
         <h1 className="page__title">Bank Dues &amp; Receivables</h1>
         <p className="page__subtitle">
-          Register what's owed to banks and keep today's receivables position current.
+          Register what's owed to banks and keep each division's receivables position current.
         </p>
       </div>
       <DuesSection />
-      <ReceivablesSection />
+      <DivisionReceivablesSection />
     </div>
   );
 }

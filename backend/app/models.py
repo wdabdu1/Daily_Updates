@@ -145,6 +145,16 @@ class BankDue(Base):
 
 
 class ReceivableDaily(Base):
+    """Legacy, account/bank-linked daily receivables. As of Round 11, Home
+    and Analysis no longer read this table -- receivables moved to a
+    division-level, bank-agnostic figure (see DivisionReceivableDaily
+    below), since the real-world cash a division holds spans multiple
+    banks/cash-in-hand and was never meaningfully "one bank account's
+    balance" in the first place. Kept, not dropped: this table's history
+    predates the switch and the user chose not to migrate/aggregate it into
+    the new table (a clean division mapping wasn't guaranteed for every past
+    entry) -- it simply stops being written to or read from going forward."""
+
     __tablename__ = "receivables_daily"
 
     id = Column(Integer, primary_key=True)
@@ -156,4 +166,26 @@ class ReceivableDaily(Base):
 
     __table_args__ = (
         UniqueConstraint("position_date", "account_id", name="uq_position_account"),
+    )
+
+
+class DivisionReceivableDaily(Base):
+    """Round 11: a division's total accumulated cash position for a given
+    day -- one already-in-SDG figure per division per day, deliberately NOT
+    linked to any bank/account (a division's cash can span several banks
+    plus cash-in-hand, and attributing it to one bank was never accurate).
+    Replaces ReceivableDaily as the source Home/Analysis read for the
+    receivables side of the cover calculation."""
+
+    __tablename__ = "division_receivables_daily"
+
+    id = Column(Integer, primary_key=True)
+    position_date = Column(Date, nullable=False, default=date.today)
+    division_id = Column(Integer, ForeignKey("divisions.id", ondelete="CASCADE"), nullable=False)
+    amount = Column(Numeric(20, 2), nullable=False, default=0)
+
+    division = relationship("Division")
+
+    __table_args__ = (
+        UniqueConstraint("position_date", "division_id", name="uq_position_division"),
     )
