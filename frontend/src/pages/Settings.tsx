@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, downloadXlsx, errMsg } from "../api/client";
+import { api, errMsg } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 
 interface BusinessUnit {
@@ -30,6 +30,8 @@ interface AppUser {
   id: number;
   username: string;
   role: string;
+  display_name: string | null;
+  email: string | null;
 }
 interface Account {
   id: number;
@@ -707,153 +709,11 @@ function CurrencyPairsSection({ currencies, onChange }: { currencies: Currency[]
   );
 }
 
-// ------------------------------------------------------------------ FX Data Import
-interface ImportResult {
-  imported: number;
-  updated: number;
-  skipped: { row_number: number; reason: string }[];
-}
-
-function ImportResultView({ result }: { result: ImportResult }) {
-  return (
-    <div className={"alert " + (result.skipped.length ? "alert--neutral" : "alert--positive")} style={{ marginTop: "1rem" }}>
-      Imported {result.imported} new entr(y/ies), updated {result.updated}.
-      {result.skipped.length > 0 && (
-        <>
-          {" "}
-          {result.skipped.length} row(s) skipped:
-          <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.2rem" }}>
-            {result.skipped.map((s) => (
-              <li key={s.row_number}>
-                Row {s.row_number}: {s.reason}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-    </div>
-  );
-}
-
-function FxImportSection() {
-  const [historyFile, setHistoryFile] = useState<File | null>(null);
-  const [historyImporting, setHistoryImporting] = useState(false);
-  const [historyResult, setHistoryResult] = useState<ImportResult | null>(null);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-
-  const [genericFile, setGenericFile] = useState<File | null>(null);
-  const [genericImporting, setGenericImporting] = useState(false);
-  const [genericResult, setGenericResult] = useState<ImportResult | null>(null);
-  const [genericError, setGenericError] = useState<string | null>(null);
-
-  async function runImport(
-    file: File | null,
-    url: string,
-    setImporting: (b: boolean) => void,
-    setResult: (r: ImportResult | null) => void,
-    setError: (e: string | null) => void,
-    setFile: (f: File | null) => void
-  ) {
-    if (!file) return;
-    setImporting(true);
-    setError(null);
-    setResult(null);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await api.post<ImportResult>(url, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setResult(res.data);
-      setFile(null);
-    } catch (e: any) {
-      setError(
-        errMsg(
-          e,
-          "Import failed -- the server didn't say why. Try again, and if it keeps happening, send this file over."
-        )
-      );
-    } finally {
-      setImporting(false);
-    }
-  }
-
-  return (
-    <div className="card">
-      <h2 className="section-title">FX Data Import</h2>
-      <p className="muted" style={{ marginTop: 0 }}>
-        Both tools here live in Settings rather than on the FX Rates page, so that page stays a
-        clean, permanent-looking view of the rate history rather than an upload form.
-      </p>
-
-      <div style={{ marginTop: "1.5rem" }}>
-        <h3 style={{ margin: "0 0 0.35rem", fontSize: "0.95rem" }}>One-Time Historical Import</h3>
-        <p className="muted" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
-          For a currency table with one row per day and Market/CBOS/Pricing already broken out by
-          USD/Euro/AED as columns (e.g. your Jan-Jul 2026 file). Re-uploading a date that's already
-          on file updates it rather than duplicating.
-        </p>
-        <div className="toolbar">
-          <div className="filters">
-            <button
-              className="btn btn--ghost"
-              onClick={() => downloadXlsx("/api/fx/import-history/template", "fx_history_import_template.xlsx")}
-            >
-              Download Template
-            </button>
-            <input type="file" accept=".xlsx" onChange={(e) => setHistoryFile(e.target.files?.[0] ?? null)} />
-            <button
-              className="btn btn--primary"
-              disabled={!historyFile || historyImporting}
-              onClick={() =>
-                runImport(
-                  historyFile,
-                  "/api/fx/import-history",
-                  setHistoryImporting,
-                  setHistoryResult,
-                  setHistoryError,
-                  setHistoryFile
-                )
-              }
-            >
-              {historyImporting ? "Uploading..." : "Upload"}
-            </button>
-          </div>
-        </div>
-        {historyError && <p className="error-text">{historyError}</p>}
-        {historyResult && <ImportResultView result={historyResult} />}
-      </div>
-
-      <div style={{ marginTop: "2rem", borderTop: "1px solid var(--color-border)", paddingTop: "1.5rem" }}>
-        <h3 style={{ margin: "0 0 0.35rem", fontSize: "0.95rem" }}>Import Rates from Excel</h3>
-        <p className="muted" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
-          General-purpose bulk upload: one row per Date + Pair + Rate Type + Rate. Re-uploading a
-          combination that already exists updates it -- use this to replace test data with final
-          figures.
-        </p>
-        <div className="toolbar">
-          <div className="filters">
-            <button className="btn btn--ghost" onClick={() => downloadXlsx("/api/fx/import/template", "fx_rates_template.xlsx")}>
-              Download Template
-            </button>
-            <input type="file" accept=".xlsx" onChange={(e) => setGenericFile(e.target.files?.[0] ?? null)} />
-            <button
-              className="btn btn--primary"
-              disabled={!genericFile || genericImporting}
-              onClick={() =>
-                runImport(genericFile, "/api/fx/import", setGenericImporting, setGenericResult, setGenericError, setGenericFile)
-              }
-            >
-              {genericImporting ? "Uploading..." : "Upload"}
-            </button>
-          </div>
-        </div>
-        {genericError && <p className="error-text">{genericError}</p>}
-        {genericResult && <ImportResultView result={genericResult} />}
-      </div>
-    </div>
-  );
-}
+// Round 12: FX Data Import UI (One-Time Historical Import + Import Rates
+// from Excel) removed from Settings at the user's request. The endpoints
+// (/api/fx/import-history, /api/fx/import, and their /template variants)
+// are untouched in the backend -- reachable directly (e.g. via curl) if
+// needed again later.
 
 // ---------------------------------------------------------------------- Accounts
 interface AccountDraft {
@@ -1179,6 +1039,8 @@ function UsersSection() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("ReadWrite");
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resetting, setResetting] = useState<number | null>(null);
@@ -1187,6 +1049,8 @@ function UsersSection() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editUsername, setEditUsername] = useState("");
   const [editRole, setEditRole] = useState("ReadWrite");
+  const [editDisplayName, setEditDisplayName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
 
   function refresh() {
     api.get<AppUser[]>("/api/settings/users").then((res) => setItems(res.data));
@@ -1198,10 +1062,18 @@ function UsersSection() {
     setBusy(true);
     setError(null);
     try {
-      await api.post("/api/settings/users", { username: username.trim(), password, role });
+      await api.post("/api/settings/users", {
+        username: username.trim(),
+        password,
+        role,
+        display_name: displayName.trim() || null,
+        email: email.trim() || null,
+      });
       setUsername("");
       setPassword("");
       setRole("ReadWrite");
+      setDisplayName("");
+      setEmail("");
       refresh();
     } catch (e: any) {
       setError(errMsg(e, "Couldn't add this user."));
@@ -1227,6 +1099,8 @@ function UsersSection() {
     setEditingId(u.id);
     setEditUsername(u.username);
     setEditRole(u.role);
+    setEditDisplayName(u.display_name || "");
+    setEditEmail(u.email || "");
     setError(null);
   }
 
@@ -1235,7 +1109,12 @@ function UsersSection() {
     setBusy(true);
     setError(null);
     try {
-      await api.put(`/api/settings/users/${id}`, { username: editUsername.trim(), role: editRole });
+      await api.put(`/api/settings/users/${id}`, {
+        username: editUsername.trim(),
+        role: editRole,
+        display_name: editDisplayName.trim() || null,
+        email: editEmail.trim() || null,
+      });
       setEditingId(null);
       refresh();
     } catch (e: any) {
@@ -1267,6 +1146,8 @@ function UsersSection() {
         <thead>
           <tr>
             <th>Username</th>
+            <th>Display Name</th>
+            <th>Email</th>
             <th>Role</th>
             <th></th>
           </tr>
@@ -1278,6 +1159,21 @@ function UsersSection() {
                 <>
                   <td>
                     <input value={editUsername} onChange={(e) => setEditUsername(e.target.value)} />
+                  </td>
+                  <td>
+                    <input
+                      value={editDisplayName}
+                      onChange={(e) => setEditDisplayName(e.target.value)}
+                      placeholder="(optional)"
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="email"
+                      value={editEmail}
+                      onChange={(e) => setEditEmail(e.target.value)}
+                      placeholder="(optional)"
+                    />
                   </td>
                   <td>
                     <select value={editRole} onChange={(e) => setEditRole(e.target.value)}>
@@ -1300,6 +1196,8 @@ function UsersSection() {
               ) : (
                 <>
                   <td>{u.username}</td>
+                  <td>{u.display_name || <span className="muted">—</span>}</td>
+                  <td>{u.email || <span className="muted">—</span>}</td>
                   <td>{u.role}</td>
                   <td>
                     {resetting === u.id ? (
@@ -1357,10 +1255,18 @@ function UsersSection() {
         </tbody>
       </table>
       {resetMsg && <p className="muted">{resetMsg}</p>}
-      <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", alignItems: "flex-end" }}>
+      <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", alignItems: "flex-end", flexWrap: "wrap" }}>
         <div>
           <label className="field-label">Username</label>
           <input value={username} onChange={(e) => setUsername(e.target.value)} />
+        </div>
+        <div>
+          <label className="field-label">Display Name</label>
+          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="(optional)" />
+        </div>
+        <div>
+          <label className="field-label">Email</label>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="(optional)" />
         </div>
         <div>
           <label className="field-label">Password</label>
@@ -1383,73 +1289,11 @@ function UsersSection() {
   );
 }
 
-// ------------------------------------------------------------------ Danger Zone
-function DangerZone() {
-  const [scope, setScope] = useState<"transactions" | "everything">("transactions");
-  const [confirmText, setConfirmText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function runReset() {
-    setBusy(true);
-    setResult(null);
-    setError(null);
-    try {
-      const res = await api.post("/api/admin/reset-data", { scope, confirm: true });
-      const deleted = res.data.deleted as Record<string, number>;
-      const summary = Object.entries(deleted)
-        .map(([k, v]) => `${v} ${k.replace(/_/g, " ")}`)
-        .join(", ");
-      setResult(`Cleared: ${summary}.`);
-      setConfirmText("");
-    } catch (e: any) {
-      setError(errMsg(e, "Reset failed."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const canConfirm = confirmText.trim().toUpperCase() === "WIPE";
-
-  return (
-    <div className="card" style={{ borderColor: "var(--color-negative)" }}>
-      <h2 className="section-title" style={{ color: "var(--color-negative)" }}>
-        Danger Zone: Reset Data
-      </h2>
-      <p className="muted">
-        Use this to clear out test data before loading final figures. This cannot be undone.
-      </p>
-      <div className="form-grid" style={{ maxWidth: 480 }}>
-        <div>
-          <label className="field-label">Scope</label>
-          <select value={scope} onChange={(e) => setScope(e.target.value as any)}>
-            <option value="transactions">Transactions only (Bank Dues, Receivables, FX Rates)</option>
-            <option value="everything">Everything (also Business Units, Divisions, Banks, Master Accounts)</option>
-          </select>
-        </div>
-        <div>
-          <label className="field-label">Type WIPE to confirm</label>
-          <input value={confirmText} onChange={(e) => setConfirmText(e.target.value)} />
-        </div>
-      </div>
-      {error && <p className="error-text">{error}</p>}
-      {result && (
-        <div className="alert alert--positive" style={{ marginTop: "1rem" }}>
-          {result}
-        </div>
-      )}
-      <button
-        className="btn btn--primary"
-        style={{ marginTop: "1rem", background: "var(--color-negative)" }}
-        disabled={!canConfirm || busy}
-        onClick={runReset}
-      >
-        {busy ? "Clearing..." : "Clear Data"}
-      </button>
-    </div>
-  );
-}
+// Round 12: the Danger Zone / Reset Data UI card removed from Settings at
+// the user's request. POST /api/admin/reset-data is untouched in the
+// backend (Manager-only, confirm=true required) -- still reachable
+// directly, e.g. via curl. See the project doc for the exact call and the
+// three scopes ("transactions" / "accounts" / "everything").
 
 export function Settings() {
   const [businessUnits, setBusinessUnits] = useState<BusinessUnit[]>([]);
@@ -1486,10 +1330,8 @@ export function Settings() {
       <BanksSection onChange={bump} />
       <CurrenciesSection onChange={bump} />
       <CurrencyPairsSection currencies={currencies} onChange={bump} />
-      <FxImportSection />
       <AccountsSection businessUnits={businessUnits} divisions={divisions} banks={banks} currencies={currencies} />
       <UsersSection />
-      <DangerZone />
     </div>
   );
 }

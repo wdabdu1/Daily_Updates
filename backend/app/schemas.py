@@ -22,17 +22,38 @@ class UserOut(BaseModel):
     id: int
     username: str
     role: str
+    display_name: Optional[str] = None
+    email: Optional[str] = None
 
 
 class UserCreate(BaseModel):
     username: str
     password: str
     role: str = "ReadWrite"
+    display_name: Optional[str] = None
+    email: Optional[str] = None
 
 
 class UserUpdate(BaseModel):
     username: str
     role: str
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class MeUpdateRequest(BaseModel):
+    """Self-service profile edit -- deliberately smaller than UserUpdate:
+    no username or role here, since those stay Manager-only via Settings >
+    Users. Anyone logged in can rename themselves and set/change their own
+    email regardless of role."""
+
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class BusinessUnitOut(BaseModel):

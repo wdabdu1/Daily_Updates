@@ -27,6 +27,12 @@ class User(Base):
     # ReadOnly: view everything except Settings, cannot submit forms
     role = Column(String(20), nullable=False, default="ReadWrite")
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Round 12: optional profile fields, editable by a Manager (Settings >
+    # Users) or by the user themselves (the top-right profile menu, see
+    # auth.py's /me PATCH). Both nullable -- neither was ever required
+    # before, and migrated/legacy users have neither set.
+    display_name = Column(String(150), nullable=True)
+    email = Column(String(255), nullable=True)
 
 
 class BusinessUnit(Base):

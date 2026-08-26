@@ -72,6 +72,227 @@ function fmtAvg(n: number | null): string {
   return formatPlain(n);
 }
 
+// International / cross-currency rates -- pairs where neither side is SDG
+// (e.g. EUR/USD, USD/AED). These only ever get a Market rate (see
+// NON_SDG_RATE_TYPES in config.py) and were previously not reachable from
+// any UI at all -- the FX Rates page's currency selector above only lists
+// SDG-quote pairs. This reuses the same single-pair endpoints the SDG
+// tables use (/api/fx/rates, /rates/{id}, /rates/table); new pairs
+// themselves are still added under Settings > Currency Pairs.
+interface IntlRateRow {
+  id: number | null;
+  rate_date: string;
+  rate: string;
+}
+
+function InternationalRatesSection({ pairs }: { pairs: CurrencyPair[] }) {
+  const { canWrite } = useAuth();
+  const intlPairs = useMemo(() => pairs.filter((p) => !p.supports_extended_rates), [pairs]);
+  const [pairId, setPairId] = useState<number | "">("");
+  const [rows, setRows] = useState<IntlRateRow[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const [addDate, setAddDate] = useState(todayStr());
+  const [addRate, setAddRate] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [rowBusy, setRowBusy] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (pairId === "" && intlPairs.length > 0) setPairId(intlPairs[0].id);
+  }, [intlPairs, pairId]);
+
+  function load() {
+    if (pairId === "") return;
+    setLoading(true);
+    api
+      .get<{ id: number | null; rate_date: string; rate: string }[]>("/api/fx/rates/table", {
+        params: { currency_pair_id: pairId, rate_type: "Market", start: HISTORY_START, end: todayStr() },
+      })
+      .then((res) =>
+        setRows(
+          res.data
+            .filter((r) => r.id !== null)
+            .map((r) => ({ id: r.id, rate_date: r.rate_date, rate: r.rate }))
+            .sort((a, b) => b.rate_date.localeCompare(a.rate_date))
+        )
+      )
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(load, [pairId]);
+
+  async function addRow() {
+    if (pairId === "" || !addDate || !addRate) return;
+    setAddBusy(true);
+    setAddError(null);
+    try {
+      await api.post("/api/fx/rates", {
+        rate_date: addDate,
+        currency_pair_id: pairId,
+        rate_type: "Market",
+        rate: addRate,
+      });
+      setAddRate("");
+      load();
+    } catch (e: any) {
+      setAddError(errMsg(e, "Couldn't save this rate."));
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
+  function startEdit(r: IntlRateRow) {
+    if (r.id === null) return;
+    setEditingId(r.id);
+    setEditValue(r.rate);
+    setRowError(null);
+  }
+
+  async function saveEdit(id: number) {
+    setRowBusy(true);
+    setRowError(null);
+    try {
+      await api.patch(`/api/fx/rates/${id}`, { rate: editValue });
+      setEditingId(null);
+      load();
+    } catch (e: any) {
+      setRowError(errMsg(e, "Couldn't update this rate."));
+    } finally {
+      setRowBusy(false);
+    }
+  }
+
+  async function deleteRow(r: IntlRateRow) {
+    if (r.id === null) return;
+    if (!window.confirm(`Delete the rate entered for ${r.rate_date}?`)) return;
+    setRowError(null);
+    try {
+      await api.delete(`/api/fx/rates/${r.id}`);
+      load();
+    } catch (e: any) {
+      setRowError(errMsg(e, "Couldn't delete this rate."));
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2 className="section-title">International Rates</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Cross-currency rates that don't involve SDG -- e.g. Euro/USD or USD/AED. These only take a
+        single Market rate (no CBOS/Pricing split). Add a new pair under Settings &gt; Currency
+        Pairs first if the one you need isn't listed below.
+      </p>
+
+      {intlPairs.length === 0 ? (
+        <div className="empty-state">
+          No international currency pairs yet -- add one under Settings &gt; Currency Pairs (pick
+          two currencies, neither of which is SDG).
+        </div>
+      ) : (
+        <>
+          <div className="toolbar">
+            <div className="filters">
+              <select value={pairId} onChange={(e) => setPairId(Number(e.target.value))}>
+                {intlPairs.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.base_currency}/{p.quote_currency}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {canWrite && (
+            <div style={{ display: "flex", gap: "0.75rem", alignItems: "flex-end", marginBottom: "1rem" }}>
+              <div>
+                <label className="field-label">Date</label>
+                <input type="date" value={addDate} onChange={(e) => setAddDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="field-label">Rate</label>
+                <NumericFormat
+                  thousandSeparator=","
+                  decimalScale={4}
+                  allowNegative={false}
+                  value={addRate}
+                  onValueChange={(v) => setAddRate(v.value)}
+                />
+              </div>
+              <button className="btn btn--primary" disabled={!addDate || !addRate || addBusy} onClick={addRow}>
+                {addBusy ? "Saving..." : "Add / Update"}
+              </button>
+            </div>
+          )}
+          {addError && <p className="error-text">{addError}</p>}
+          {rowError && <p className="error-text">{rowError}</p>}
+
+          {loading ? (
+            <p className="muted">Loading...</p>
+          ) : rows.length === 0 ? (
+            <div className="empty-state">No rates recorded yet for this pair.</div>
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th className="numeric">Rate</th>
+                  {canWrite && <th></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.rate_date}>
+                    <td>{r.rate_date}</td>
+                    {editingId === r.id ? (
+                      <td className="numeric">
+                        <div style={{ display: "flex", gap: "0.35rem", alignItems: "center", justifyContent: "flex-end" }}>
+                          <NumericFormat
+                            style={{ textAlign: "right", width: 100 }}
+                            thousandSeparator=","
+                            decimalScale={4}
+                            allowNegative={false}
+                            value={editValue}
+                            onValueChange={(v) => setEditValue(v.value)}
+                          />
+                          <button className="btn btn--small" onClick={() => saveEdit(r.id!)} disabled={rowBusy}>
+                            Save
+                          </button>
+                          <button className="btn btn--small" onClick={() => setEditingId(null)} disabled={rowBusy}>
+                            Cancel
+                          </button>
+                        </div>
+                      </td>
+                    ) : (
+                      <td className="numeric">{formatPlain(r.rate)}</td>
+                    )}
+                    {canWrite && editingId !== r.id && (
+                      <td>
+                        <div className="row-actions">
+                          <button className="btn btn--ghost btn--small" onClick={() => startEdit(r)}>
+                            Edit
+                          </button>
+                          <button className="btn btn--danger btn--small" onClick={() => deleteRow(r)}>
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function FxRates() {
   const { canWrite } = useAuth();
   const [pairs, setPairs] = useState<CurrencyPair[]>([]);
@@ -483,6 +704,8 @@ export function FxRates() {
           })
         )}
       </div>
+
+      <InternationalRatesSection pairs={pairs} />
     </div>
   );
 }

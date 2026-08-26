@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { NumericFormat } from "react-number-format";
 import { api, downloadXlsx, errMsg } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { formatSDG } from "../format";
+import { formatSDG, formatWhole } from "../format";
 
 interface BankDue {
   id: number;
@@ -23,12 +23,6 @@ interface AccountOption {
   account_number: string;
   bank_short_name: string | null;
   business_unit_name: string | null;
-}
-
-interface ImportResult {
-  imported: number;
-  updated: number;
-  skipped: { row_number: number; reason: string }[];
 }
 
 interface DivisionOption {
@@ -70,15 +64,68 @@ function isOverdue(d: BankDue): boolean {
   return d.status === "Active" && !!d.due_date && d.due_date < todayStr();
 }
 
+type SortKey =
+  | "business_unit_name"
+  | "division_name"
+  | "bank_short_name"
+  | "account_number"
+  | "due_date"
+  | "facility_type"
+  | "amount"
+  | "status";
+
+const SORT_COLUMNS: { key: SortKey; label: string; numeric?: boolean }[] = [
+  { key: "business_unit_name", label: "Business Unit" },
+  { key: "division_name", label: "Division" },
+  { key: "bank_short_name", label: "Bank" },
+  { key: "account_number", label: "Account" },
+  { key: "due_date", label: "Due Date" },
+  { key: "facility_type", label: "Facility" },
+  { key: "amount", label: "Amount", numeric: true },
+  { key: "status", label: "Status" },
+];
+
+type DueFilters = Record<Exclude<SortKey, "amount">, string>;
+const EMPTY_FILTERS: DueFilters = {
+  business_unit_name: "",
+  division_name: "",
+  bank_short_name: "",
+  account_number: "",
+  due_date: "",
+  facility_type: "",
+  status: "",
+};
+
+function dueSortValue(d: BankDue, key: SortKey): string | number {
+  switch (key) {
+    case "amount":
+      return parseFloat(d.amount);
+    case "business_unit_name":
+      return (d.business_unit_name || "Unassigned").toLowerCase();
+    case "division_name":
+      return (d.division_name || "").toLowerCase();
+    case "bank_short_name":
+      return (d.bank_short_name || "").toLowerCase();
+    case "account_number":
+      return (d.account_number || "").toLowerCase();
+    case "due_date":
+      return d.due_date || "";
+    case "facility_type":
+      return (d.facility_type || "").toLowerCase();
+    case "status":
+      return d.status;
+  }
+}
+
 function DuesSection() {
   const { canWrite } = useAuth();
   const [dues, setDues] = useState<BankDue[]>([]);
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
   const [loading, setLoading] = useState(true);
-  const [file, setFile] = useState<File | null>(null);
-  const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<ImportResult | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
+
+  const [sortKey, setSortKey] = useState<SortKey>("due_date");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [filters, setFilters] = useState<DueFilters>(EMPTY_FILTERS);
 
   const emptyDraft = { account_id: "", due_date: todayStr(), facility_type: "", amount: "" };
   const [draft, setDraft] = useState(emptyDraft);
@@ -114,31 +161,54 @@ function DuesSection() {
     }
   }, [canWrite]);
 
-  async function handleImport() {
-    if (!file) return;
-    setImporting(true);
-    setImportError(null);
-    setImportResult(null);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await api.post<ImportResult>("/api/dues/import", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setImportResult(res.data);
-      setFile(null);
-      refresh();
-    } catch (e: any) {
-      setImportError(
-        errMsg(
-          e,
-          "Import failed -- the server didn't say why. Try again, and if it keeps happening, send this file over."
-        )
-      );
-    } finally {
-      setImporting(false);
+  const filteredDues = useMemo(() => {
+    return dues.filter((d) => {
+      if (
+        !(d.business_unit_name || "Unassigned").toLowerCase().includes(filters.business_unit_name.toLowerCase())
+      )
+        return false;
+      if (!(d.division_name || "").toLowerCase().includes(filters.division_name.toLowerCase())) return false;
+      if (!(d.bank_short_name || "").toLowerCase().includes(filters.bank_short_name.toLowerCase())) return false;
+      if (!(d.account_number || "").toLowerCase().includes(filters.account_number.toLowerCase())) return false;
+      if (!(d.due_date || "").includes(filters.due_date)) return false;
+      if (!(d.facility_type || "").toLowerCase().includes(filters.facility_type.toLowerCase())) return false;
+      if (filters.status === "Overdue" && !isOverdue(d)) return false;
+      if (filters.status && filters.status !== "Overdue" && d.status !== filters.status) return false;
+      return true;
+    });
+  }, [dues, filters]);
+
+  const sortedDues = useMemo(() => {
+    const copy = [...filteredDues];
+    copy.sort((a, b) => {
+      const av = dueSortValue(a, sortKey);
+      const bv = dueSortValue(b, sortKey);
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return copy;
+  }, [filteredDues, sortKey, sortDir]);
+
+  const filteredTotal = useMemo(
+    () => filteredDues.reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0),
+    [filteredDues]
+  );
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
     }
   }
+
+  function setFilter(key: keyof DueFilters, value: string) {
+    setFilters((prev) => ({ ...prev, [key]: value }));
+  }
+
+  const hasActiveFilters = Object.values(filters).some((v) => v);
 
   async function settle(id: number) {
     await api.post(`/api/dues/${id}/settle`);
@@ -215,50 +285,24 @@ function DuesSection() {
       {canWrite && (
         <>
           <p className="muted" style={{ marginTop: 0 }}>
-            Upload dues in bulk, or add one below. Accounts referenced in an upload that don't
-            exist yet (Business Unit, Division, Bank, Account Number) are created automatically.
-            Re-uploading the same account + due date + facility type updates the amount/status
-            instead of duplicating.
+            Add a due below, or use the filters and column headers in the table to check totals
+            for a subset of dues.
           </p>
           <div className="toolbar">
             <div className="filters">
-              <button
-                className="btn btn--ghost"
-                onClick={() => downloadXlsx("/api/dues/import/template", "bank_dues_template.xlsx")}
-              >
-                Download Template
-              </button>
-              <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-              <button className="btn btn--primary" disabled={!file || importing} onClick={handleImport}>
-                {importing ? "Uploading..." : "Upload"}
-              </button>
               <button
                 className="btn btn--ghost"
                 onClick={() => downloadXlsx("/api/dues/export", "bank_dues.xlsx")}
               >
                 Download as Excel
               </button>
-            </div>
-          </div>
-          {importError && <p className="error-text">{importError}</p>}
-          {importResult && (
-            <div className={"alert " + (importResult.skipped.length ? "alert--neutral" : "alert--positive")}>
-              Imported {importResult.imported} new due(s), updated {importResult.updated}.
-              {importResult.skipped.length > 0 && (
-                <>
-                  {" "}
-                  {importResult.skipped.length} row(s) skipped:
-                  <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.2rem" }}>
-                    {importResult.skipped.map((s) => (
-                      <li key={s.row_number}>
-                        Row {s.row_number}: {s.reason}
-                      </li>
-                    ))}
-                  </ul>
-                </>
+              {hasActiveFilters && (
+                <button className="btn btn--ghost" onClick={() => setFilters(EMPTY_FILTERS)}>
+                  Clear Filters
+                </button>
               )}
             </div>
-          )}
+          </div>
         </>
       )}
 
@@ -269,22 +313,87 @@ function DuesSection() {
       ) : dues.length === 0 ? (
         <div className="empty-state">No bank dues recorded yet.</div>
       ) : (
+        <div style={{ overflowX: "auto" }}>
         <table className="data-table">
           <thead>
             <tr>
-              <th>Business Unit</th>
-              <th>Division</th>
-              <th>Bank</th>
-              <th>Account</th>
-              <th>Due Date</th>
-              <th>Facility</th>
-              <th className="numeric">Amount</th>
-              <th>Status</th>
+              {SORT_COLUMNS.map((col) => (
+                <th
+                  key={col.key}
+                  className={col.numeric ? "numeric" : undefined}
+                  style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+                  onClick={() => toggleSort(col.key)}
+                  title="Click to sort"
+                >
+                  {col.label}
+                  {sortKey === col.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                </th>
+              ))}
+              {canWrite && <th></th>}
+            </tr>
+            <tr>
+              <th>
+                <input
+                  className="filter-input"
+                  value={filters.business_unit_name}
+                  onChange={(e) => setFilter("business_unit_name", e.target.value)}
+                  placeholder="Filter..."
+                />
+              </th>
+              <th>
+                <input
+                  className="filter-input"
+                  value={filters.division_name}
+                  onChange={(e) => setFilter("division_name", e.target.value)}
+                  placeholder="Filter..."
+                />
+              </th>
+              <th>
+                <input
+                  className="filter-input"
+                  value={filters.bank_short_name}
+                  onChange={(e) => setFilter("bank_short_name", e.target.value)}
+                  placeholder="Filter..."
+                />
+              </th>
+              <th>
+                <input
+                  className="filter-input"
+                  value={filters.account_number}
+                  onChange={(e) => setFilter("account_number", e.target.value)}
+                  placeholder="Filter..."
+                />
+              </th>
+              <th>
+                <input
+                  className="filter-input"
+                  value={filters.due_date}
+                  onChange={(e) => setFilter("due_date", e.target.value)}
+                  placeholder="YYYY-MM-DD"
+                />
+              </th>
+              <th>
+                <input
+                  className="filter-input"
+                  value={filters.facility_type}
+                  onChange={(e) => setFilter("facility_type", e.target.value)}
+                  placeholder="Filter..."
+                />
+              </th>
+              <th className="numeric"></th>
+              <th>
+                <select value={filters.status} onChange={(e) => setFilter("status", e.target.value)}>
+                  <option value="">All</option>
+                  <option value="Active">Active</option>
+                  <option value="Settled">Settled</option>
+                  <option value="Overdue">Overdue</option>
+                </select>
+              </th>
               {canWrite && <th></th>}
             </tr>
           </thead>
           <tbody>
-            {dues.map((d) =>
+            {sortedDues.map((d) =>
               editingId === d.id ? (
                 <tr key={d.id}>
                   <td colSpan={4}>
@@ -373,8 +482,17 @@ function DuesSection() {
                 </tr>
               )
             )}
+            <tr style={{ fontWeight: 700 }}>
+              <td colSpan={6}>
+                Total ({filteredDues.length} of {dues.length} row{dues.length === 1 ? "" : "s"})
+              </td>
+              <td className="numeric">{formatSDG(filteredTotal)}</td>
+              <td></td>
+              {canWrite && <td></td>}
+            </tr>
           </tbody>
         </table>
+        </div>
       )}
 
       {canWrite && (
@@ -597,16 +715,16 @@ function DivisionReceivablesSection() {
           <div className="empty-state">No division positions recorded yet.</div>
         ) : (
           <div style={{ overflowX: "auto" }}>
-            <table className="data-table">
+            <table className="data-table" style={{ fontSize: "0.8rem" }}>
               <thead>
                 <tr>
                   <th>Date</th>
                   {divisions.map((d) => (
-                    <th className="numeric" key={d.id} title={d.business_unit_name}>
-                      {d.name}
+                    <th className="numeric" key={d.id} style={{ whiteSpace: "nowrap" }}>
+                      {d.business_unit_name} - {d.name} (SDG)
                     </th>
                   ))}
-                  <th className="numeric">Total</th>
+                  <th className="numeric">Total (SDG)</th>
                 </tr>
               </thead>
               <tbody>
@@ -616,14 +734,14 @@ function DivisionReceivablesSection() {
                     {divisions.map((d) => (
                       <td className="numeric" key={d.id}>
                         {row.amounts[String(d.id)] !== undefined ? (
-                          formatSDG(row.amounts[String(d.id)])
+                          formatWhole(row.amounts[String(d.id)])
                         ) : (
                           <span className="muted">—</span>
                         )}
                       </td>
                     ))}
                     <td className="numeric" style={{ fontWeight: 700 }}>
-                      {formatSDG(row.total)}
+                      {formatWhole(row.total)}
                     </td>
                   </tr>
                 ))}

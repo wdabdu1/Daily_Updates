@@ -349,6 +349,8 @@ def create_user(
         username=payload.username,
         password_hash=hash_password(payload.password),
         role=payload.role,
+        display_name=payload.display_name,
+        email=payload.email,
     )
     db.add(user)
     db.commit()
@@ -406,6 +408,8 @@ def update_user(
             )
     user.username = payload.username
     user.role = payload.role
+    user.display_name = payload.display_name
+    user.email = payload.email
     db.commit()
     db.refresh(user)
     return user

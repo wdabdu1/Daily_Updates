@@ -121,6 +121,41 @@ a {
   opacity: 0.8;
 }
 
+.profile-menu {
+  position: relative;
+}
+
+.profile-menu__trigger {
+  background: none;
+  border: none;
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.profile-menu__trigger:hover {
+  background: var(--color-bg-subtle);
+}
+
+.profile-menu__panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  width: 280px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 1rem;
+  z-index: 30;
+  text-align: left;
+}
+
+.profile-menu__panel input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 /* --------------------------------------------------------------- Page  */
 .page {
   max-width: var(--max-width);
@@ -323,6 +358,24 @@ table.data-table td.numeric,
 table.data-table th.numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+table.data-table input.filter-input {
+  width: 100%;
+  min-width: 5rem;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  box-sizing: border-box;
+}
+
+table.data-table th select {
+  font-size: 0.78rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 tr.is-carried-forward td {

@@ -141,4 +141,22 @@ def apply_schema_upgrades(engine: Engine) -> list[str]:
                 " created after the migration ran."
             )
 
+    # Round 12: users.display_name / users.email are new columns on an
+    # existing table -- create_all() never adds a column to a table that
+    # already exists in production, same reasoning as every patch above.
+    # ADD COLUMN IF NOT EXISTS is naturally idempotent, so this can run
+    # unconditionally on every startup with no existence check needed.
+    if "users" in inspector.get_table_names():
+        user_cols = {c["name"] for c in inspector.get_columns("users")}
+        added = []
+        with engine.begin() as conn:
+            if "display_name" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(150)"))
+                added.append("display_name")
+            if "email" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
+                added.append("email")
+        if added:
+            report.append(f"Added users({', '.join(added)}) -- new optional profile columns.")
+
     return report

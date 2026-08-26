@@ -139,9 +139,9 @@ export function Home() {
           return (
             <div className="stat-card" key={rt}>
               <p className="stat-card__label">{rt} Rate — USD/SDG</p>
-              <p className="stat-card__value">{f?.usd_rate ? formatPlain(f.usd_rate) : "—"}</p>
+              <p className="stat-card__value">{f?.usd_rate ? formatPlain(f.usd_rate, 0) : "—"}</p>
               <p className="stat-card__meta" style={{ fontSize: "0.78rem" }}>
-                AED/SDG: {f?.aed_rate ? formatPlain(f.aed_rate) : "—"}
+                AED/SDG: {f?.aed_rate ? formatPlain(f.aed_rate, 0) : "—"}
               </p>
             </div>
           );
@@ -169,13 +169,13 @@ export function Home() {
       <div className="stat-grid">
         <div className="stat-card">
           <p className="stat-card__label">Total Receivables</p>
-          <p className="stat-card__value">{formatSDG(summary.total_receivables_sdg)}</p>
-          <p className="stat-card__meta">{formatUSD(summary.total_receivables_usd)}</p>
+          <p className="stat-card__value">{formatSDG(summary.total_receivables_sdg, 0)}</p>
+          <p className="stat-card__meta">{formatUSD(summary.total_receivables_usd, 0)}</p>
         </div>
         <div className="stat-card">
           <p className="stat-card__label">Active Bank Dues</p>
-          <p className="stat-card__value">{formatSDG(summary.total_dues_sdg)}</p>
-          <p className="stat-card__meta">{formatUSD(summary.total_dues_usd)}</p>
+          <p className="stat-card__value">{formatSDG(summary.total_dues_sdg, 0)}</p>
+          <p className="stat-card__meta">{formatUSD(summary.total_dues_usd, 0)}</p>
         </div>
         <div className="stat-card">
           <p className="stat-card__label">Available Cover</p>
@@ -183,9 +183,9 @@ export function Home() {
             className="stat-card__value"
             style={{ color: isCovered ? "var(--color-positive)" : "var(--color-negative)" }}
           >
-            {formatSDG(summary.gap_sdg)}
+            {formatSDG(summary.gap_sdg, 0)}
           </p>
-          <p className="stat-card__meta">{formatUSD(summary.gap_usd_equivalent)}</p>
+          <p className="stat-card__meta">{formatUSD(summary.gap_usd_equivalent, 0)}</p>
         </div>
       </div>
 
