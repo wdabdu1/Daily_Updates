@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { NumericFormat } from "react-number-format";
-import { api, errMsg } from "../api/client";
+import { api, downloadXlsx, errMsg } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { formatPlain } from "../format";
 
@@ -312,6 +312,15 @@ export function FxRates() {
   const [batchError, setBatchError] = useState<string | null>(null);
   const [batchOk, setBatchOk] = useState<string | null>(null);
 
+  // Round 13: for Market rates only, USD and Euro are derived from the
+  // entered AED rate via the International Rates pairs (USD/AED, EUR/USD)
+  // rather than typed in directly -- CBOS/Pricing keep manual 3-field entry
+  // since those don't have an equivalent international-rate source.
+  const [calcBusy, setCalcBusy] = useState(false);
+  const [calcError, setCalcError] = useState<string | null>(null);
+  const [calcInfo, setCalcInfo] = useState<string | null>(null);
+  const isMarketAutoCalc = batchType === "Market";
+
   const [editing, setEditing] = useState<{ date: string; field: FieldKey } | null>(null);
   const [editValue, setEditValue] = useState("");
   const [rowBusy, setRowBusy] = useState(false);
@@ -346,6 +355,64 @@ export function FxRates() {
     loadTable();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currency]);
+
+  useEffect(() => {
+    if (!isMarketAutoCalc) {
+      setCalcError(null);
+      setCalcInfo(null);
+      return;
+    }
+    if (!aedRate || !batchDate) {
+      setUsdRate("");
+      setEuroRate("");
+      setCalcError(null);
+      setCalcInfo(null);
+      return;
+    }
+    const usdAedPair = pairs.find((p) => p.base_currency === "USD" && p.quote_currency === "AED");
+    const eurUsdPair = pairs.find((p) => p.base_currency === "EUR" && p.quote_currency === "USD");
+    if (!usdAedPair || !eurUsdPair) {
+      setCalcError(
+        "USD/AED and EUR/USD international pairs must exist first -- add them under Settings > Currency Pairs."
+      );
+      setUsdRate("");
+      setEuroRate("");
+      return;
+    }
+    setCalcBusy(true);
+    setCalcError(null);
+    Promise.all([
+      api.get<{ rate: string }[]>("/api/fx/rates/table", {
+        params: { currency_pair_id: usdAedPair.id, rate_type: "Market", start: batchDate, end: batchDate },
+      }),
+      api.get<{ rate: string }[]>("/api/fx/rates/table", {
+        params: { currency_pair_id: eurUsdPair.id, rate_type: "Market", start: batchDate, end: batchDate },
+      }),
+    ])
+      .then(([usdAedRes, eurUsdRes]) => {
+        const usdAed = usdAedRes.data[0]?.rate;
+        const eurUsd = eurUsdRes.data[0]?.rate;
+        if (!usdAed || !eurUsd) {
+          setCalcError(
+            "No USD/AED or EUR/USD International Rate on file on or before this date yet -- add one under" +
+              " International Rates below first."
+          );
+          setUsdRate("");
+          setEuroRate("");
+          return;
+        }
+        const aed = parseFloat(aedRate);
+        const usdAedNum = parseFloat(usdAed);
+        const eurUsdNum = parseFloat(eurUsd);
+        const usd = aed * usdAedNum;
+        const euro = eurUsdNum * usd;
+        setUsdRate(usd.toFixed(4));
+        setEuroRate(euro.toFixed(4));
+        setCalcInfo(`Calculated from USD/AED ${usdAedNum.toFixed(4)} and EUR/USD ${eurUsdNum.toFixed(4)}.`);
+      })
+      .catch(() => setCalcError("Couldn't calculate USD/Euro rates from the international pairs."))
+      .finally(() => setCalcBusy(false));
+  }, [isMarketAutoCalc, aedRate, batchDate, pairs]);
 
   async function saveBatch() {
     if (!batchDate || !usdRate || !euroRate || !aedRate) return;
@@ -441,17 +508,26 @@ export function FxRates() {
     return rows.filter((r) => monthKey(r.rate_date) === periodValue);
   }, [rows, periodType, periodValue]);
 
+  // Round 13 fix: this used to build from the unfiltered `rows`, so
+  // selecting Quarter/Month only narrowed the 3 average stat cards above --
+  // the actual table ignored the period filter entirely. Building from
+  // `filteredRows` instead makes the filter apply everywhere it's shown.
   const byMonth = useMemo(() => {
     const m = new Map<string, CombinedRow[]>();
-    for (const r of rows) {
+    for (const r of filteredRows) {
       const k = monthKey(r.rate_date);
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(r);
     }
     return m;
-  }, [rows]);
+  }, [filteredRows]);
   const monthKeys = Array.from(byMonth.keys()).sort().reverse();
   const currentMonthKey = todayStr().slice(0, 7);
+  // When a specific Quarter/Month is picked, every group in view is exactly
+  // what was asked for -- show it expanded rather than collapsed into
+  // <details>, which only makes sense for "All" (where every month besides
+  // the current one is historical noise by default).
+  const alwaysExpand = periodType !== "All";
 
   function cell(r: CombinedRow, field: FieldKey) {
     const rate = field === "market" ? r.market_rate : field === "cbos" ? r.cbos_rate : r.pricing_rate;
@@ -552,8 +628,11 @@ export function FxRates() {
         <div className="card">
           <h2 className="section-title">Add / Update Rates</h2>
           <p className="muted" style={{ marginTop: 0, marginBottom: "1rem" }}>
-            USD, Euro and AED are saved together as one entry -- all three are required, whichever
-            rate type you're recording.
+            {isMarketAutoCalc
+              ? "For Market rates, only the AED rate is entered -- USD and Euro are calculated" +
+                " automatically from the USD/AED and EUR/USD International Rates (below) for this date."
+              : "USD, Euro and AED are saved together as one entry -- all three are required, whichever" +
+                " rate type you're recording."}
           </p>
           <div className="form-grid" style={{ maxWidth: 720 }}>
             <div>
@@ -569,26 +648,6 @@ export function FxRates() {
               <input type="date" value={batchDate} onChange={(e) => setBatchDate(e.target.value)} />
             </div>
             <div>
-              <label className="field-label">USD Rate</label>
-              <NumericFormat
-                thousandSeparator=","
-                decimalScale={4}
-                allowNegative={false}
-                value={usdRate}
-                onValueChange={(v) => setUsdRate(v.value)}
-              />
-            </div>
-            <div>
-              <label className="field-label">Euro Rate</label>
-              <NumericFormat
-                thousandSeparator=","
-                decimalScale={4}
-                allowNegative={false}
-                value={euroRate}
-                onValueChange={(v) => setEuroRate(v.value)}
-              />
-            </div>
-            <div>
               <label className="field-label">AED Rate</label>
               <NumericFormat
                 thousandSeparator=","
@@ -598,11 +657,36 @@ export function FxRates() {
                 onValueChange={(v) => setAedRate(v.value)}
               />
             </div>
+            <div>
+              <label className="field-label">USD Rate{isMarketAutoCalc ? " (calculated)" : ""}</label>
+              <NumericFormat
+                thousandSeparator=","
+                decimalScale={4}
+                allowNegative={false}
+                value={usdRate}
+                disabled={isMarketAutoCalc}
+                onValueChange={(v) => setUsdRate(v.value)}
+              />
+            </div>
+            <div>
+              <label className="field-label">Euro Rate{isMarketAutoCalc ? " (calculated)" : ""}</label>
+              <NumericFormat
+                thousandSeparator=","
+                decimalScale={4}
+                allowNegative={false}
+                value={euroRate}
+                disabled={isMarketAutoCalc}
+                onValueChange={(v) => setEuroRate(v.value)}
+              />
+            </div>
           </div>
+          {isMarketAutoCalc && calcBusy && <p className="muted">Calculating...</p>}
+          {isMarketAutoCalc && calcError && <p className="error-text">{calcError}</p>}
+          {isMarketAutoCalc && calcInfo && !calcError && <p className="muted">{calcInfo}</p>}
           <button
             className="btn btn--primary"
             style={{ marginTop: "0.75rem" }}
-            disabled={!batchDate || !usdRate || !euroRate || !aedRate || batchBusy}
+            disabled={!batchDate || !usdRate || !euroRate || !aedRate || batchBusy || (isMarketAutoCalc && !!calcError)}
             onClick={saveBatch}
           >
             {batchBusy ? "Saving..." : "Save Rates"}
@@ -648,6 +732,22 @@ export function FxRates() {
                 ))}
               </select>
             )}
+            <button
+              className="btn btn--ghost"
+              disabled={filteredRows.length === 0}
+              onClick={() => {
+                const dates = filteredRows.map((r) => r.rate_date).sort();
+                const start = dates[0] || HISTORY_START;
+                const end = dates[dates.length - 1] || todayStr();
+                downloadXlsx("/api/fx/rates/combined/export", `fx_rate_history_${currency}.xlsx`, {
+                  currency,
+                  start,
+                  end,
+                });
+              }}
+            >
+              Download as Excel
+            </button>
           </div>
         </div>
 
@@ -677,7 +777,7 @@ export function FxRates() {
         ) : (
           monthKeys.map((m) => {
             const monthRows = byMonth.get(m)!;
-            const isCurrent = m === currentMonthKey;
+            const isCurrent = alwaysExpand || m === currentMonthKey;
             const summaryLine = (
               <p className="muted" style={{ fontSize: "0.82rem", margin: "0 0 0.5rem" }}>
                 Averages for {monthLabel(m)}: Market {fmtAvg(avg(monthRows, "market_rate"))} · CBOS{" "}

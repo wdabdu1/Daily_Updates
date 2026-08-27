@@ -1,5 +1,5 @@
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -149,26 +149,41 @@ def _assign_slice_colors(amounts_by_label: dict[str, Decimal]) -> list[schemas.C
     return slices
 
 
+def _pct(numerator: Decimal, denominator: Decimal) -> Decimal | None:
+    """Active Dues / Receivables * 100 -- the user's own definition of
+    "cover %" (dues divided by receivables, not the more usual receivables
+    over dues). None when there's nothing to divide by, so the frontend can
+    show a dash instead of a fabricated 0%/∞."""
+    if denominator == 0:
+        return None
+    return (numerator / denominator * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 @router.get("/cover-snapshot", response_model=schemas.CoverSnapshot)
 def cover_snapshot(
     position_date: date | None = Query(
-        None, description="Defaults to the latest date with recorded division receivables."
+        None,
+        description="Defaults to the latest date with recorded division receivables or cash balances.",
     ),
     db: Session = Depends(get_db),
     _u: models.User = Depends(get_current_user),
 ):
-    """Powers the Cover Analysis stacked-bar snapshot: one day's Receivables
-    (stacked by Division) next to Dues (stacked by Bank) next to the Gap.
-    Receivables and Dues are fundamentally different populations here --
-    receivables have no bank concept (see DivisionReceivableDaily) and dues
-    have no division concept unless traced through their account -- so this
-    endpoint reports each side by its own natural dimension rather than
-    forcing a shared one."""
-    as_of = position_date or db.query(
-        func.max(models.DivisionReceivableDaily.position_date)
-    ).scalar()
+    """Powers the Analysis page's two Cover Analysis charts: an "Overall"
+    snapshot (Credit Sales/PDC + Cash Balances combined, stacked by
+    Division) and a PDC-only snapshot, each against Dues (stacked by Bank)
+    and each with its own Gap and cover %. Receivables and Dues are
+    fundamentally different populations here -- receivables/cash have no
+    bank concept and dues have no division concept unless traced through
+    their account -- so this endpoint reports each side by its own natural
+    dimension rather than forcing a shared one."""
+    latest_recv = db.query(func.max(models.DivisionReceivableDaily.position_date)).scalar()
+    latest_cash = db.query(func.max(models.DivisionCashBalanceDaily.position_date)).scalar()
+    as_of = position_date or max(
+        (d for d in (latest_recv, latest_cash) if d is not None), default=None
+    )
 
-    recv_by_division: dict[str, Decimal] = {}
+    pdc_by_division: dict[str, Decimal] = {}
+    cash_by_division: dict[str, Decimal] = {}
     if as_of:
         rows = (
             db.query(models.DivisionReceivableDaily)
@@ -178,7 +193,23 @@ def cover_snapshot(
         )
         for r in rows:
             label = r.division.name if r.division else "Unassigned"
-            recv_by_division[label] = recv_by_division.get(label, Decimal("0")) + r.amount
+            pdc_by_division[label] = pdc_by_division.get(label, Decimal("0")) + r.amount
+
+        cash_rows = (
+            db.query(models.DivisionCashBalanceDaily)
+            .options(joinedload(models.DivisionCashBalanceDaily.division))
+            .filter(models.DivisionCashBalanceDaily.position_date == as_of)
+            .all()
+        )
+        for r in cash_rows:
+            label = r.division.name if r.division else "Unassigned"
+            cash_by_division[label] = cash_by_division.get(label, Decimal("0")) + r.amount
+
+    overall_by_division: dict[str, Decimal] = {}
+    for label, amt in pdc_by_division.items():
+        overall_by_division[label] = overall_by_division.get(label, Decimal("0")) + amt
+    for label, amt in cash_by_division.items():
+        overall_by_division[label] = overall_by_division.get(label, Decimal("0")) + amt
 
     accounts = (
         db.query(models.MasterAccount).options(joinedload(models.MasterAccount.bank)).all()
@@ -197,14 +228,22 @@ def cover_snapshot(
         label = acct.bank.short_name if acct.bank else "Unassigned"
         dues_by_bank[label] = dues_by_bank.get(label, Decimal("0")) + amt
 
-    total_recv = sum(recv_by_division.values(), Decimal("0"))
+    total_pdc = sum(pdc_by_division.values(), Decimal("0"))
+    total_cash = sum(cash_by_division.values(), Decimal("0"))
+    total_overall = total_pdc + total_cash
     total_dues = sum(dues_by_bank.values(), Decimal("0"))
 
     return schemas.CoverSnapshot(
         position_date=as_of,
-        receivables_by_division=_assign_slice_colors(recv_by_division),
+        receivables_by_division=_assign_slice_colors(overall_by_division),
         dues_by_bank=_assign_slice_colors(dues_by_bank),
-        total_receivables_sdg=total_recv,
+        total_receivables_sdg=total_overall,
         total_dues_sdg=total_dues,
-        gap_sdg=total_dues - total_recv,
+        gap_sdg=total_dues - total_overall,
+        cover_pct=_pct(total_dues, total_overall),
+        pdc_by_division=_assign_slice_colors(pdc_by_division),
+        total_pdc_sdg=total_pdc,
+        total_cash_sdg=total_cash,
+        gap_pdc_sdg=total_dues - total_pdc,
+        cover_pct_pdc=_pct(total_dues, total_pdc),
     )

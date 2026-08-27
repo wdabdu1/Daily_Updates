@@ -195,3 +195,28 @@ class DivisionReceivableDaily(Base):
     __table_args__ = (
         UniqueConstraint("position_date", "division_id", name="uq_position_division"),
     )
+
+
+class DivisionCashBalanceDaily(Base):
+    """Round 13: a division's total cash position for a given day -- same
+    shape and semantics as DivisionReceivableDaily (Credit Sales / PDC)
+    above, just tracking cash balances instead of outstanding receivables.
+    Kept as a separate table (not a `kind` column on the receivables table)
+    so the two stay independently queryable/editable while still combining
+    cleanly for the Overall Cover Analysis. A brand-new table needs no
+    schema_upgrades.py patch -- create_all() creates it fresh on any
+    database that doesn't have it yet, unlike a column added to a table
+    that already exists in production."""
+
+    __tablename__ = "division_cash_balances_daily"
+
+    id = Column(Integer, primary_key=True)
+    position_date = Column(Date, nullable=False, default=date.today)
+    division_id = Column(Integer, ForeignKey("divisions.id", ondelete="CASCADE"), nullable=False)
+    amount = Column(Numeric(20, 2), nullable=False, default=0)
+
+    division = relationship("Division")
+
+    __table_args__ = (
+        UniqueConstraint("position_date", "division_id", name="uq_cash_position_division"),
+    )

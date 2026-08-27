@@ -64,9 +64,11 @@ export function errMsg(e: any, fallback: string): string {
 
 /** Trigger a browser download for an Excel export endpoint that returns a
  * binary xlsx stream (can't just be a plain <a href> because auth needs a
- * bearer header, not a cookie). */
-export async function downloadXlsx(url: string, filename: string) {
-  const res = await api.get(url, { responseType: "blob" });
+ * bearer header, not a cookie). `params` (optional) are passed through as
+ * the request's query string -- e.g. the currency/date-window a filtered
+ * export endpoint needs. */
+export async function downloadXlsx(url: string, filename: string, params?: Record<string, unknown>) {
+  const res = await api.get(url, { responseType: "blob", params });
   const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
   const a = document.createElement("a");
   a.href = blobUrl;

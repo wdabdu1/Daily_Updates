@@ -162,7 +162,7 @@ def summary(db: Session = Depends(get_db), _user: models.User = Depends(require_
 
 @router.get("/breakdown", response_model=schemas.CoverBreakdownResponse)
 def breakdown(
-    group_by: str = Query("bank", pattern="^(business_unit|division|bank)$"),
+    group_by: str = Query("business_unit", pattern="^(business_unit|division|bank)$"),
     db: Session = Depends(get_db),
     _user: models.User = Depends(require_any),
 ):
@@ -282,82 +282,84 @@ def breakdown(
 
 @router.get("/receivables-contribution", response_model=schemas.ReceivablesContributionResponse)
 def receivables_contribution(
-    group_by: str = Query("division", pattern="^(division|business_unit)$"),
     db: Session = Depends(get_db),
     _user: models.User = Depends(require_any),
 ):
-    """Powers the Home 'Receivables Contribution' table -- always grounded
-    in the real, division-level receivables figure (unlike 'Cover by',
-    there's no Bank option here since receivables have no bank concept).
-    Dues roll up into whichever division/BU their account is linked to;
-    dues on an account with no division/BU land in a trailing 'Unassigned'
-    row rather than being silently dropped."""
+    """Powers the Home 'Receivables Contribution' table -- always at
+    division grain, with Business Unit AND Division shown as separate
+    columns (Round 13) rather than a toggle between the two. Dues on an
+    account with no division link land in a trailing 'Unassigned' row
+    rather than being silently dropped."""
     as_of = _latest_receivables_date(db)
     divisions = (
-        db.query(models.Division).options(joinedload(models.Division.business_unit)).all()
+        db.query(models.Division)
+        .options(joinedload(models.Division.business_unit))
+        .all()
     )
     recv_by_division_id = _receivables_by_division(db, as_of)
     accounts = (
         db.query(models.MasterAccount)
-        .options(
-            joinedload(models.MasterAccount.business_unit),
-            joinedload(models.MasterAccount.division),
-        )
+        .options(joinedload(models.MasterAccount.division))
         .all()
     )
 
-    recv_by_label: dict[str, Decimal] = {}
-    if group_by == "division":
-        for d in divisions:
-            recv_by_label[d.name] = recv_by_label.get(d.name, Decimal("0")) + recv_by_division_id.get(
-                d.id, Decimal("0")
-            )
-    else:
-        for d in divisions:
-            bu_label = d.business_unit.name if d.business_unit else "Unassigned"
-            recv_by_label[bu_label] = recv_by_label.get(bu_label, Decimal("0")) + recv_by_division_id.get(
-                d.id, Decimal("0")
-            )
-
-    due_groups: dict[str, list[models.MasterAccount]] = {}
+    div_accounts: dict[int, list[models.MasterAccount]] = {}
+    unassigned_accounts: list[models.MasterAccount] = []
     for a in accounts:
-        if group_by == "division":
-            label = a.division.name if a.division else "Unassigned"
+        if a.division_id is not None:
+            div_accounts.setdefault(a.division_id, []).append(a)
         else:
-            label = a.business_unit.name if a.business_unit else "Unassigned"
-        due_groups.setdefault(label, []).append(a)
+            unassigned_accounts.append(a)
 
-    dues_by_label: dict[str, Decimal] = {}
-    for label, group_accounts in due_groups.items():
+    dues_by_division_id: dict[int, Decimal] = {}
+    for div_id, group_accounts in div_accounts.items():
         total_dues, _unconv = _dues_in_sdg(db, group_accounts)
-        dues_by_label[label] = total_dues
+        dues_by_division_id[div_id] = total_dues
 
-    grand_total_recv = sum(recv_by_label.values(), Decimal("0"))
-    # "Unassigned" (dues with no division/BU link) always sorts last, real
-    # groups alphabetically before it.
-    real_labels = sorted(l for l in (set(recv_by_label) | set(dues_by_label)) if l != "Unassigned")
-    ordered_labels = real_labels + (["Unassigned"] if "Unassigned" in dues_by_label else [])
+    unassigned_dues = Decimal("0")
+    if unassigned_accounts:
+        unassigned_dues, _unconv = _dues_in_sdg(db, unassigned_accounts)
+
+    grand_total_recv = sum(recv_by_division_id.values(), Decimal("0"))
+
+    sorted_divisions = sorted(
+        divisions,
+        key=lambda d: ((d.business_unit.name if d.business_unit else "Unassigned"), d.name),
+    )
 
     rows = []
-    for label in ordered_labels:
-        total_recv = recv_by_label.get(label, Decimal("0"))
-        total_dues = dues_by_label.get(label, Decimal("0"))
+    for d in sorted_divisions:
+        total_recv = recv_by_division_id.get(d.id, Decimal("0"))
+        total_dues = dues_by_division_id.get(d.id, Decimal("0"))
         pct = None
         if grand_total_recv != 0:
             pct = (total_recv / grand_total_recv * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         rows.append(
             schemas.ReceivablesContributionRow(
-                group_label=label,
+                business_unit_name=d.business_unit.name if d.business_unit else "Unassigned",
+                division_name=d.name,
                 total_receivables_sdg=total_recv,
                 pct_of_total_receivables=pct,
                 total_dues_sdg=total_dues,
             )
         )
 
+    if unassigned_accounts:
+        rows.append(
+            schemas.ReceivablesContributionRow(
+                business_unit_name="Unassigned",
+                division_name=None,
+                total_receivables_sdg=Decimal("0"),
+                pct_of_total_receivables=None,
+                total_dues_sdg=unassigned_dues,
+            )
+        )
+
     total_row = schemas.ReceivablesContributionRow(
-        group_label="Total",
+        business_unit_name="Total",
+        division_name=None,
         total_receivables_sdg=grand_total_recv,
         pct_of_total_receivables=Decimal("100.00") if grand_total_recv else None,
-        total_dues_sdg=sum(dues_by_label.values(), Decimal("0")),
+        total_dues_sdg=sum(dues_by_division_id.values(), Decimal("0")) + unassigned_dues,
     )
     return schemas.ReceivablesContributionResponse(rows=rows, total=total_row)

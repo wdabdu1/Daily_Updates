@@ -245,18 +245,11 @@ def rates_table(
     ]
 
 
-@router.get("/rates/combined", response_model=list[schemas.FxCombinedRow])
-def rates_combined(
-    currency: str,
-    start: date = Query(...),
-    end: date = Query(...),
-    db: Session = Depends(get_db),
-    _u: models.User = Depends(get_current_user),
-):
-    """Powers the redesigned FX Rates page: for one selected currency (vs
-    SDG), Market/CBOS/Pricing side by side per calendar day. Averaging and
-    period filtering happen client-side over this series so the same data
-    can drive "All / Quarter / Month" without extra round-trips."""
+def _combined_rows(db: Session, currency: str, start: date, end: date) -> list[schemas.FxCombinedRow]:
+    """Market/CBOS/Pricing side by side per calendar day for one currency
+    (vs SDG). Shared by the /rates/combined JSON endpoint (Rate History
+    table) and the /rates/combined/export Excel download (Round 13) so the
+    two always agree on exactly what a given currency/date-window contains."""
     currency = currency.strip().upper()
     pair = get_pair(db, currency, "SDG")
     if not pair:
@@ -288,6 +281,48 @@ def rates_combined(
             )
         )
     return rows
+
+
+@router.get("/rates/combined", response_model=list[schemas.FxCombinedRow])
+def rates_combined(
+    currency: str,
+    start: date = Query(...),
+    end: date = Query(...),
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(get_current_user),
+):
+    """Powers the redesigned FX Rates page: for one selected currency (vs
+    SDG), Market/CBOS/Pricing side by side per calendar day. Averaging and
+    period filtering happen client-side over this series so the same data
+    can drive "All / Quarter / Month" without extra round-trips."""
+    return _combined_rows(db, currency, start, end)
+
+
+@router.get("/rates/combined/export")
+def export_rates_combined(
+    currency: str,
+    start: date = Query(...),
+    end: date = Query(...),
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(get_current_user),
+):
+    """Excel export of the Rate History table (Round 13) -- the frontend
+    passes whatever currency/date-window its All/Quarter/Month filter
+    currently resolves to, so the download always matches what's on
+    screen rather than dumping the full unfiltered history."""
+    currency = currency.strip().upper()
+    rows = _combined_rows(db, currency, start, end)
+    out_rows = [
+        {
+            "Date": r.rate_date,
+            "Currency": currency,
+            "Market": float(r.market_rate) if r.market_rate is not None else None,
+            "CBOS": float(r.cbos_rate) if r.cbos_rate is not None else None,
+            "Pricing": float(r.pricing_rate) if r.pricing_rate is not None else None,
+        }
+        for r in rows
+    ]
+    return xlsx_response(out_rows, f"fx_rate_history_{currency}.xlsx")
 
 
 @router.get("/rates/table/export")

@@ -390,7 +390,12 @@ class CoverBreakdownResponse(BaseModel):
 
 
 class ReceivablesContributionRow(BaseModel):
-    group_label: str
+    # Round 13: always carries both dimensions rather than a single
+    # group_label toggled between them -- division_name is None only for
+    # the trailing "Unassigned" row (dues on an account with no division
+    # link) and for the "Total" row.
+    business_unit_name: str
+    division_name: Optional[str] = None
     total_receivables_sdg: Decimal
     pct_of_total_receivables: Optional[Decimal] = None
     total_dues_sdg: Decimal
@@ -409,8 +414,19 @@ class CoverSnapshotSlice(BaseModel):
 
 class CoverSnapshot(BaseModel):
     position_date: Optional[date]
+    # Round 13: "Overall" = Credit Sales (PDC) + Cash Balances combined, per
+    # division -- this is what "Overall Cover Analysis" charts. The PDC-only
+    # figures below power the second, PDC-only chart on the same page.
     receivables_by_division: list[CoverSnapshotSlice]
     dues_by_bank: list[CoverSnapshotSlice]
     total_receivables_sdg: Decimal
     total_dues_sdg: Decimal
     gap_sdg: Decimal
+    # Active Dues / Overall Receivables * 100 (the user's own definition,
+    # dues divided by receivables) -- None when there's nothing to divide by.
+    cover_pct: Optional[Decimal] = None
+    pdc_by_division: list[CoverSnapshotSlice] = []
+    total_pdc_sdg: Decimal = Decimal("0")
+    total_cash_sdg: Decimal = Decimal("0")
+    gap_pdc_sdg: Decimal = Decimal("0")
+    cover_pct_pdc: Optional[Decimal] = None

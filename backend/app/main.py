@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import DBAPIError
 
-from .routers import accounts, admin, analysis, auth, dues, fx, home, receivables, settings
+from .routers import accounts, admin, analysis, auth, cash, dues, fx, home, receivables, settings
 from .seed import init_db
 
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +33,7 @@ app.include_router(admin.router)
 app.include_router(accounts.router)
 app.include_router(dues.router)
 app.include_router(receivables.router)
+app.include_router(cash.router)
 app.include_router(fx.router)
 app.include_router(analysis.router)
 

@@ -555,7 +555,22 @@ function DuesSection() {
   );
 }
 
-function DivisionReceivablesSection() {
+// Round 13: this drives both the "Credit Sales (PDC)" section (formerly
+// "Division Receivables") and the new "Cash Balances" section -- the two
+// are identical in shape (a division's daily SDG position, no bank/account
+// link) and only differ in which API path they read/write and their own
+// title/description text, so one parameterized component replaces what
+// would otherwise be ~150 duplicated lines.
+interface DivisionAmountSectionProps {
+  title: string;
+  description: string;
+  formUrl: string;
+  saveUrl: string;
+  tableUrl: string;
+  savedNoun: string;
+}
+
+function DivisionAmountSection({ title, description, formUrl, saveUrl, tableUrl, savedNoun }: DivisionAmountSectionProps) {
   const { canWrite } = useAuth();
   const [divisions, setDivisions] = useState<DivisionOption[]>([]);
   const [tableRows, setTableRows] = useState<DivisionReceivableTableRow[]>([]);
@@ -572,7 +587,7 @@ function DivisionReceivablesSection() {
   function refreshTable() {
     setLoadingTable(true);
     return api
-      .get<DivisionReceivableTableRow[]>("/api/receivables/divisions/table")
+      .get<DivisionReceivableTableRow[]>(tableUrl)
       .then((res) => setTableRows(res.data))
       .finally(() => setLoadingTable(false));
   }
@@ -580,13 +595,14 @@ function DivisionReceivablesSection() {
   useEffect(() => {
     api.get<DivisionOption[]>("/api/receivables/divisions/list").then((res) => setDivisions(res.data));
     refreshTable();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableUrl]);
 
   async function startUpdate() {
     setLoadingForm(true);
     setSaved(null);
     try {
-      const res = await api.get<DivisionReceivableFormRow[]>("/api/receivables/divisions/form", {
+      const res = await api.get<DivisionReceivableFormRow[]>(formUrl, {
         params: { position_date: positionDate },
       });
       setFormRows(res.data);
@@ -602,11 +618,11 @@ function DivisionReceivablesSection() {
   async function save() {
     setSaving(true);
     try {
-      await api.post("/api/receivables/divisions/save", {
+      await api.post(saveUrl, {
         position_date: positionDate,
         rows: formRows.map((r) => ({ division_id: r.division_id, amount: amounts[r.division_id] || "0" })),
       });
-      setSaved(`Saved as the ${positionDate} division position.`);
+      setSaved(`Saved as the ${positionDate} ${savedNoun}.`);
       setEditing(false);
       refreshTable();
     } finally {
@@ -618,13 +634,9 @@ function DivisionReceivablesSection() {
 
   return (
     <div className="card">
-      <h2 className="section-title">Division Receivables</h2>
+      <h2 className="section-title">{title}</h2>
       <p className="muted" style={{ marginTop: 0 }}>
-        Each division's total accumulated cash position -- across whichever banks it holds it in,
-        or cash in hand -- recorded as a single SDG figure rather than tied to one bank/account.
-        This feeds the Home page's coverage comparison. Pick a date (defaults to today), use
-        Today's Update to prefill every division with its most recently recorded amount, adjust
-        what's changed, and save -- the record is added to the history table below.
+        {description}
       </p>
       {saved && <div className="alert alert--positive">{saved}</div>}
       {!editing && canWrite && (
@@ -760,11 +772,26 @@ export function BankDues() {
       <div className="page__header">
         <h1 className="page__title">Bank Dues &amp; Receivables</h1>
         <p className="page__subtitle">
-          Register what's owed to banks and keep each division's receivables position current.
+          Register what's owed to banks and keep each division's receivables and cash positions current.
         </p>
       </div>
       <DuesSection />
-      <DivisionReceivablesSection />
+      <DivisionAmountSection
+        title="Credit Sales (PDC)"
+        description="Each division's total accumulated PDC / credit-sales position -- across whichever banks it holds it in, or cash in hand -- recorded as a single SDG figure rather than tied to one bank/account. This feeds the Home page's coverage comparison and the Overall Cover Analysis on the Analysis page. Pick a date (defaults to today), use Today's Update to prefill every division with its most recently recorded amount, adjust what's changed, and save -- the record is added to the history table below."
+        formUrl="/api/receivables/divisions/form"
+        saveUrl="/api/receivables/divisions/save"
+        tableUrl="/api/receivables/divisions/table"
+        savedNoun="Credit Sales (PDC) position"
+      />
+      <DivisionAmountSection
+        title="Cash Balances"
+        description="Each division's total cash position -- across whichever banks it holds it in, or cash in hand -- recorded as a single SDG figure per day, alongside Credit Sales (PDC). Combined with PDC in the Overall Cover Analysis on the Analysis page, and comparable against Dues on its own. Pick a date, use Today's Update to prefill every division with its most recently recorded balance, adjust what's changed, and save."
+        formUrl="/api/cash/divisions/form"
+        saveUrl="/api/cash/divisions/save"
+        tableUrl="/api/cash/divisions/table"
+        savedNoun="cash balance"
+      />
     </div>
   );
 }

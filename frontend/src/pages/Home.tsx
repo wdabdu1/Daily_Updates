@@ -42,7 +42,8 @@ interface CoverBreakdownResponse {
 }
 
 interface ReceivablesContributionRow {
-  group_label: string;
+  business_unit_name: string;
+  division_name: string | null;
   total_receivables_sdg: string;
   pct_of_total_receivables: string | null;
   total_dues_sdg: string;
@@ -53,16 +54,11 @@ interface ReceivablesContributionResponse {
 }
 
 type CoverGroupBy = "bank" | "division" | "business_unit";
-type ContributionGroupBy = "division" | "business_unit";
 
 const FX_RATE_TYPES = ["Market", "CBOS", "Pricing"];
 
 const COVER_GROUP_LABELS: Record<CoverGroupBy, string> = {
   bank: "Bank",
-  division: "Division",
-  business_unit: "Business Unit",
-};
-const CONTRIBUTION_GROUP_LABELS: Record<ContributionGroupBy, string> = {
   division: "Division",
   business_unit: "Business Unit",
 };
@@ -82,9 +78,8 @@ function dash(value: string | null, fmt: (v: string) => string): string {
 
 export function Home() {
   const [summary, setSummary] = useState<HomeSummary | null>(null);
-  const [coverGroupBy, setCoverGroupBy] = useState<CoverGroupBy>("bank");
+  const [coverGroupBy, setCoverGroupBy] = useState<CoverGroupBy>("business_unit");
   const [coverBreakdown, setCoverBreakdown] = useState<CoverBreakdownResponse | null>(null);
-  const [contribGroupBy, setContribGroupBy] = useState<ContributionGroupBy>("division");
   const [contribution, setContribution] = useState<ReceivablesContributionResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -104,9 +99,9 @@ export function Home() {
 
   useEffect(() => {
     api
-      .get<ReceivablesContributionResponse>(`/api/home/receivables-contribution?group_by=${contribGroupBy}`)
+      .get<ReceivablesContributionResponse>("/api/home/receivables-contribution")
       .then((res) => setContribution(res.data));
-  }, [contribGroupBy]);
+  }, []);
 
   if (loading && !summary) {
     return (
@@ -261,19 +256,13 @@ export function Home() {
       <div className="card">
         <div className="toolbar">
           <h2 className="section-title" style={{ marginBottom: 0 }}>
-            Receivables Contribution by {CONTRIBUTION_GROUP_LABELS[contribGroupBy]}
+            Receivables Contribution
           </h2>
-          <div className="filters">
-            <select value={contribGroupBy} onChange={(e) => setContribGroupBy(e.target.value as ContributionGroupBy)}>
-              <option value="division">Division</option>
-              <option value="business_unit">Business Unit</option>
-            </select>
-          </div>
         </div>
         <p className="muted" style={{ marginTop: 0 }}>
-          How much each {contribGroupBy === "division" ? "division" : "business unit"} contributes to
-          total receivables. Dues with no {contribGroupBy === "division" ? "division" : "business unit"} link
-          land in a trailing "Unassigned" row rather than being dropped.
+          How much each division (and its Business Unit) contributes to total receivables. Dues on
+          an account with no division link land in a trailing "Unassigned" row rather than being
+          dropped.
         </p>
         {!contribution || contribution.rows.length === 0 ? (
           <div className="empty-state">No divisions registered yet.</div>
@@ -281,23 +270,25 @@ export function Home() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>{CONTRIBUTION_GROUP_LABELS[contribGroupBy]}</th>
+                <th>Business Unit</th>
+                <th>Division</th>
                 <th className="numeric">Receivables</th>
                 <th className="numeric">% of Total Receivables</th>
                 <th className="numeric">Active Dues</th>
               </tr>
             </thead>
             <tbody>
-              {contribution.rows.map((row) => (
-                <tr key={row.group_label}>
-                  <td>{row.group_label}</td>
+              {contribution.rows.map((row, i) => (
+                <tr key={`${row.business_unit_name}-${row.division_name ?? i}`}>
+                  <td>{row.business_unit_name}</td>
+                  <td>{row.division_name ?? "—"}</td>
                   <td className="numeric">{formatSDG(row.total_receivables_sdg)}</td>
                   <td className="numeric">{formatShare(row.pct_of_total_receivables)}</td>
                   <td className="numeric">{formatSDG(row.total_dues_sdg)}</td>
                 </tr>
               ))}
               <tr style={{ fontWeight: 700 }}>
-                <td>{contribution.total.group_label}</td>
+                <td colSpan={2}>{contribution.total.business_unit_name}</td>
                 <td className="numeric">{formatSDG(contribution.total.total_receivables_sdg)}</td>
                 <td className="numeric">{formatShare(contribution.total.pct_of_total_receivables)}</td>
                 <td className="numeric">{formatSDG(contribution.total.total_dues_sdg)}</td>
