@@ -25,6 +25,16 @@ interface HomeSummary {
   unconverted_account_count: number;
   notes: string | null;
   fx_snapshot: FxSnapshotRate[];
+  total_cash_sdg: string;
+  total_cash_usd: string | null;
+  total_receivables_inc_cash_sdg: string;
+  total_receivables_inc_cash_usd: string | null;
+  gap_inc_cash_sdg: string;
+  gap_inc_cash_usd_equivalent: string | null;
+  cover_pct_inc_cash: string | null;
+  cover_pct_exc_cash: string | null;
+  eur_usd_rate: string | null;
+  eur_usd_rate_date: string | null;
 }
 
 interface CoverBreakdownRow {
@@ -115,6 +125,8 @@ export function Home() {
 
   const gap = parseFloat(summary.gap_sdg);
   const isCovered = gap >= 0;
+  const gapIncCash = parseFloat(summary.gap_inc_cash_sdg);
+  const isCoveredIncCash = gapIncCash >= 0;
   const fxByType = new Map(summary.fx_snapshot.map((f) => [f.rate_type, f]));
 
   return (
@@ -123,12 +135,12 @@ export function Home() {
         <h1 className="page__title">Treasury Coverage &amp; Liquidity</h1>
         <p className="page__subtitle">
           {summary.as_of
-            ? `Receivables as of ${summary.as_of}`
+            ? `Position as of ${summary.as_of} (latest of Credit Sales/PDC and Cash Balances)`
             : "No receivables have been recorded yet"}
         </p>
       </div>
 
-      <div className="stat-grid" style={{ marginBottom: "1.25rem" }}>
+      <div className="stat-grid stat-grid--4" style={{ marginBottom: "1.25rem" }}>
         {FX_RATE_TYPES.map((rt) => {
           const f = fxByType.get(rt);
           return (
@@ -141,6 +153,17 @@ export function Home() {
             </div>
           );
         })}
+        <div className="stat-card">
+          <p className="stat-card__label">EUR/USD Rate</p>
+          <p className="stat-card__value">
+            {summary.eur_usd_rate ? formatPlain(summary.eur_usd_rate, 4) : "—"}
+          </p>
+          <p className="stat-card__meta" style={{ fontSize: "0.78rem" }}>
+            {summary.eur_usd_rate_date
+              ? `As of ${summary.eur_usd_rate_date}`
+              : "No rate on file yet — add one under FX > International Rates"}
+          </p>
+        </div>
       </div>
 
       {summary.status === "shortfall" && (
@@ -161,9 +184,37 @@ export function Home() {
         <div className="alert alert--neutral">{summary.notes}</div>
       )}
 
-      <div className="stat-grid">
+      <div className="stat-grid stat-grid--4">
         <div className="stat-card">
-          <p className="stat-card__label">Total Receivables</p>
+          <p className="stat-card__label">Receivables — inc. Cash</p>
+          <p className="stat-card__value">{formatSDG(summary.total_receivables_inc_cash_sdg, 0)}</p>
+          <p className="stat-card__meta">{formatUSD(summary.total_receivables_inc_cash_usd, 0)}</p>
+        </div>
+        <div className="stat-card">
+          <p className="stat-card__label">Active Bank Dues</p>
+          <p className="stat-card__value">{formatSDG(summary.total_dues_sdg, 0)}</p>
+          <p className="stat-card__meta">{formatUSD(summary.total_dues_usd, 0)}</p>
+        </div>
+        <div className="stat-card">
+          <p className="stat-card__label">Available Cover</p>
+          <p
+            className="stat-card__value"
+            style={{ color: isCoveredIncCash ? "var(--color-positive)" : "var(--color-negative)" }}
+          >
+            {formatSDG(summary.gap_inc_cash_sdg, 0)}
+          </p>
+          <p className="stat-card__meta">{formatUSD(summary.gap_inc_cash_usd_equivalent, 0)}</p>
+        </div>
+        <div className="stat-card">
+          <p className="stat-card__label">Cover %</p>
+          <p className="stat-card__value">{formatShare(summary.cover_pct_inc_cash)}</p>
+          <p className="stat-card__meta">Active Dues ÷ Receivables (inc. Cash)</p>
+        </div>
+      </div>
+
+      <div className="stat-grid stat-grid--4">
+        <div className="stat-card">
+          <p className="stat-card__label">Receivables — exc. Cash</p>
           <p className="stat-card__value">{formatSDG(summary.total_receivables_sdg, 0)}</p>
           <p className="stat-card__meta">{formatUSD(summary.total_receivables_usd, 0)}</p>
         </div>
@@ -181,6 +232,11 @@ export function Home() {
             {formatSDG(summary.gap_sdg, 0)}
           </p>
           <p className="stat-card__meta">{formatUSD(summary.gap_usd_equivalent, 0)}</p>
+        </div>
+        <div className="stat-card">
+          <p className="stat-card__label">Cover %</p>
+          <p className="stat-card__value">{formatShare(summary.cover_pct_exc_cash)}</p>
+          <p className="stat-card__meta">Active Dues ÷ Receivables (exc. Cash)</p>
         </div>
       </div>
 

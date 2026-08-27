@@ -348,6 +348,25 @@ class HomeSummary(BaseModel):
     # Today's FX snapshot cards: one row per rate-type that has at least a
     # USD or AED figure on file. Always in Market, CBOS, Pricing order.
     fx_snapshot: list[FxSnapshotRate] = []
+    # Round 14: Home page's 2nd/3rd stat-card rows. total_receivables_sdg/usd
+    # and gap_sdg/gap_usd_equivalent above stay PDC-only ("Receivables - exc.
+    # Cash", unchanged from before Round 14); these add the Cash Balances
+    # total and a parallel "inc. Cash" set of totals/gap/cover-%, plus each
+    # flavor's Cover % (Active Dues / Receivables x 100, None on a zero
+    # denominator -- same literal formula as analysis.py's Cover Analysis).
+    total_cash_sdg: Decimal = Decimal("0")
+    total_cash_usd: Optional[Decimal] = None
+    total_receivables_inc_cash_sdg: Decimal = Decimal("0")
+    total_receivables_inc_cash_usd: Optional[Decimal] = None
+    gap_inc_cash_sdg: Decimal = Decimal("0")
+    gap_inc_cash_usd_equivalent: Optional[Decimal] = None
+    cover_pct_inc_cash: Optional[Decimal] = None
+    cover_pct_exc_cash: Optional[Decimal] = None
+    # Round 14: 4th FX snapshot card -- latest EUR/USD Market rate (an
+    # International Rates pair, not one of the SDG-quote Market/CBOS/Pricing
+    # rows in fx_snapshot above).
+    eur_usd_rate: Optional[Decimal] = None
+    eur_usd_rate_date: Optional[date] = None
 
 
 class ImportRowError(BaseModel):

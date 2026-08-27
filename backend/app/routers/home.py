@@ -30,6 +30,21 @@ def _latest_receivables_date(db: Session):
     return db.query(func.max(models.DivisionReceivableDaily.position_date)).scalar()
 
 
+def _latest_cash_date(db: Session):
+    return db.query(func.max(models.DivisionCashBalanceDaily.position_date)).scalar()
+
+
+def _cover_pct(dues: Decimal, receivables: Decimal) -> Optional[Decimal]:
+    """Round 14: 'Cover %' = Active Dues / Receivables x 100 -- same literal
+    formula as analysis.py's cover-snapshot Cover %, kept as its own small
+    helper here rather than imported to avoid a cross-router dependency for
+    one four-line function. None (not a fabricated 0%/inf) on a zero
+    denominator."""
+    if receivables == 0:
+        return None
+    return (dues / receivables * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def _dues_in_sdg(db: Session, accounts: list[models.MasterAccount]) -> tuple[Decimal, int]:
     """Sums active dues (converted to SDG) for a specific list of accounts.
     Returns (total, unconverted_count)."""
@@ -96,34 +111,75 @@ def _receivables_by_division(db: Session, as_of) -> dict[int, Decimal]:
     return {r.division_id: r.amount for r in rows}
 
 
+def _cash_by_division(db: Session, as_of) -> dict[int, Decimal]:
+    """Same as _receivables_by_division above, but for Cash Balances
+    (DivisionCashBalanceDaily) -- Round 14."""
+    if not as_of:
+        return {}
+    rows = (
+        db.query(models.DivisionCashBalanceDaily)
+        .filter(models.DivisionCashBalanceDaily.position_date == as_of)
+        .all()
+    )
+    return {r.division_id: r.amount for r in rows}
+
+
 @router.get("/summary", response_model=schemas.HomeSummary)
 def summary(db: Session = Depends(get_db), _user: models.User = Depends(require_any)):
     accounts = db.query(models.MasterAccount).all()
     divisions = db.query(models.Division).all()
 
-    as_of = _latest_receivables_date(db)
+    # Round 14: the page's single "as of" date is the later of Credit Sales
+    # (PDC) and Cash Balances' own latest recorded date -- same convention
+    # already established by analysis.py's Round 13 "Overall Cover Analysis"
+    # (PDC + Cash combined), so a cash-only day is still picked up rather
+    # than silently ignored because PDC wasn't touched that same day.
+    recv_date = _latest_receivables_date(db)
+    cash_date = _latest_cash_date(db)
+    candidate_dates = [d for d in (recv_date, cash_date) if d is not None]
+    as_of = max(candidate_dates) if candidate_dates else None
+
     recv_by_division = _receivables_by_division(db, as_of)
-    total_recv = sum(recv_by_division.values(), Decimal("0"))
+    cash_by_division = _cash_by_division(db, as_of)
+    total_recv = sum(recv_by_division.values(), Decimal("0"))  # PDC only -- "exc. Cash"
+    total_cash = sum(cash_by_division.values(), Decimal("0"))
+    total_recv_inc_cash = total_recv + total_cash
     total_dues, unconverted = _dues_in_sdg(db, accounts)
 
     # Cover convention: Dues are the hedge/coverage side, Receivables are the
     # exposure they need to cover. gap = dues - receivables, so gap >= 0
     # ("covered") means dues cover (or exceed) receivables -- positive/green.
     # gap < 0 ("shortfall") means receivables exceed dues -- an uncovered
-    # exposure, shown red.
+    # exposure, shown red. The page's headline status/alert stays keyed off
+    # the "exc. Cash" gap (unchanged from before Round 14) -- Round 14 only
+    # added the "inc. Cash" figures as a second, parallel set of stat cards.
     gap = total_dues - total_recv
+    gap_inc_cash = total_dues - total_recv_inc_cash
     gap_pct = None
     if total_dues != 0:
         gap_pct = (gap / total_dues * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+    cover_pct_exc_cash = _cover_pct(total_dues, total_recv)
+    cover_pct_inc_cash = _cover_pct(total_dues, total_recv_inc_cash)
+
     usd_rate, usd_rate_date = get_latest_rate(db, "USD", "SDG", "Market")
     gap_usd = None
+    gap_inc_cash_usd = None
     total_recv_usd = None
+    total_recv_inc_cash_usd = None
+    total_cash_usd = None
     total_dues_usd = None
     if usd_rate:
         gap_usd = (gap / usd_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        gap_inc_cash_usd = (gap_inc_cash / usd_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         total_recv_usd = (total_recv / usd_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        total_recv_inc_cash_usd = (total_recv_inc_cash / usd_rate).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        total_cash_usd = (total_cash / usd_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         total_dues_usd = (total_dues / usd_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    eur_usd_rate, eur_usd_rate_date = get_latest_rate(db, "EUR", "USD", "Market")
 
     if not accounts and not divisions:
         status_ = "no_data"
@@ -157,6 +213,16 @@ def summary(db: Session = Depends(get_db), _user: models.User = Depends(require_
         unconverted_account_count=unconverted,
         notes=notes,
         fx_snapshot=_fx_snapshot(db),
+        total_cash_sdg=total_cash,
+        total_cash_usd=total_cash_usd,
+        total_receivables_inc_cash_sdg=total_recv_inc_cash,
+        total_receivables_inc_cash_usd=total_recv_inc_cash_usd,
+        gap_inc_cash_sdg=gap_inc_cash,
+        gap_inc_cash_usd_equivalent=gap_inc_cash_usd,
+        cover_pct_inc_cash=cover_pct_inc_cash,
+        cover_pct_exc_cash=cover_pct_exc_cash,
+        eur_usd_rate=eur_usd_rate,
+        eur_usd_rate_date=eur_usd_rate_date,
     )
 
 

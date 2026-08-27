@@ -201,6 +201,19 @@ a {
   margin-bottom: 1.75rem;
 }
 
+/* Round 14: Home page's three FX/Receivables card rows are always exactly
+   4-across on desktop widths, rather than however many fit at 220px each --
+   falls back to auto-fit below ~900px so cards don't get uncomfortably
+   narrow on a smaller window. */
+.stat-grid--4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 900px) {
+  .stat-grid--4 {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  }
+}
+
 .stat-card {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
