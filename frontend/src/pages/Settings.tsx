@@ -720,7 +720,10 @@ function CurrencyPairsSection({ currencies, onChange }: { currencies: Currency[]
 // the Bank Dues importer stay curl-only for now; only the "wide" one-row-
 // per-day historical layout (the one the user's actual currency-history
 // file uses) gets a UI again.
-function FxHistoryImportSection() {
+// Exported (rather than a plain local function) purely so the strict
+// noUnusedLocals compiler check doesn't flag it as dead code while it's not
+// currently rendered anywhere -- see the render-site comment below.
+export function FxHistoryImportSection() {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1419,7 +1422,12 @@ export function Settings() {
       <BanksSection onChange={bump} />
       <CurrenciesSection onChange={bump} />
       <CurrencyPairsSection currencies={currencies} onChange={bump} />
-      <FxHistoryImportSection />
+      {/* Round 18: hidden again at the user's request now that the 2010-2026
+          backfill is done -- FxHistoryImportSection (defined above) is left
+          in place, not deleted, so it's a one-line re-add (uncomment the
+          line below) the next time a bulk historical load is needed,
+          instead of rebuilding the whole section from scratch again. */}
+      {/* <FxHistoryImportSection /> */}
       <AccountsSection businessUnits={businessUnits} divisions={divisions} banks={banks} currencies={currencies} />
       <UsersSection />
     </div>

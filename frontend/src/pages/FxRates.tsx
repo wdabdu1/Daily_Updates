@@ -320,7 +320,12 @@ export function FxRates() {
   const [rows, setRows] = useState<CombinedRow[]>([]);
   const [loadingTable, setLoadingTable] = useState(false);
 
-  const [periodType, setPeriodType] = useState<"All" | "Year" | "Quarter" | "Month">("All");
+  // Round 18: defaults to the current month (not "All") -- once the Rate
+  // History table's fetch window reached back to 2010 (Round 16), an "All"
+  // average blended 15+ years of history into one number, which isn't
+  // useful for day-to-day work. The user can still switch back to
+  // All/Year/Quarter manually; this only changes the initial view.
+  const [periodType, setPeriodType] = useState<"All" | "Year" | "Quarter" | "Month">("Month");
   const [periodValue, setPeriodValue] = useState<string>("");
   // Round 16: fetch window start, resolved per-currency via /rates/earliest
   // instead of a fixed constant -- see the note on NO_DATA_FALLBACK_START.
