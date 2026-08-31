@@ -49,27 +49,54 @@ const RATE_COLORS: Record<string, string> = {
   Pricing: "#d97a1f",
 };
 
-const PERIOD_PRESETS = [
-  { label: "Last month", months: 1 },
-  { label: "Last 3 months", months: 3 },
-  { label: "Last 6 months", months: 6 },
-  { label: "Last 12 months", months: 12 },
-];
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+// Last-resort fallback fetch-window start, mirroring NO_DATA_FALLBACK_START
+// in FxRates.tsx -- only used if a pair genuinely has no rates on file yet
+// (before /api/fx/rates/earliest resolves, or if it returns null).
+const NO_DATA_FALLBACK_START = todayStr();
 
-function periodRange(months: number) {
-  const end = new Date();
-  const start = new Date();
-  start.setMonth(start.getMonth() - months);
-  const fmt = (d: Date) => d.toISOString().slice(0, 10);
-  return { start: fmt(start), end: fmt(end) };
+// Round 19: these mirror the identically-named helpers in FxRates.tsx
+// (kept as separate copies since the two pages don't currently share a
+// date-utils module) -- used to power the same Year/Quarter/Month period
+// filter here that the Rate History table already has.
+function yearKey(dateStr: string) {
+  return dateStr.slice(0, 4);
+}
+function monthKey(dateStr: string) {
+  return dateStr.slice(0, 7);
+}
+function monthLabel(key: string) {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+function quarterKey(dateStr: string) {
+  const [y, m] = dateStr.slice(0, 7).split("-").map(Number);
+  return `${y}-Q${Math.floor((m - 1) / 3) + 1}`;
+}
+function quarterLabel(key: string) {
+  const [y, q] = key.split("-Q");
+  return `Q${q} ${y}`;
 }
 
 function FxAnalysis() {
   const [pairs, setPairs] = useState<CurrencyPair[]>([]);
   const [pairId, setPairId] = useState<number | null>(null);
-  const [months, setMonths] = useState(3);
-  const [series, setSeries] = useState<{ label: string; color: string; points: { x: string; y: number }[] }[]>([]);
+  // Round 19: fetch window start, resolved per-pair via /rates/earliest
+  // (same pattern as FxRates.tsx) instead of a fixed lookback window --
+  // this used to be capped at "Last 12 months" max, so a specific older
+  // year (or the full history) was never reachable at all.
+  const [historyStart, setHistoryStart] = useState<string | null>(null);
+  const [rawSeries, setRawSeries] = useState<{ label: string; color: string; points: { x: string; y: number }[] }[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Defaults to the current year -- same reasoning as FxRates.tsx defaulting
+  // its Rate History table to the current month: a fresh page load should
+  // show something immediately relevant, not the oldest data on file. The
+  // user can still switch to All/Quarter/Month manually.
+  const [periodType, setPeriodType] = useState<"All" | "Year" | "Quarter" | "Month">("Year");
+  const [periodValue, setPeriodValue] = useState<string>("");
 
   useEffect(() => {
     api.get<CurrencyPair[]>("/api/settings/currency-pairs").then((res) => {
@@ -81,16 +108,27 @@ function FxAnalysis() {
 
   useEffect(() => {
     if (pairId == null) return;
+    setHistoryStart(null);
+    api
+      .get<{ earliest: string | null }>("/api/fx/rates/earliest", { params: { currency_pair_id: pairId } })
+      .then((res) => setHistoryStart(res.data.earliest ?? NO_DATA_FALLBACK_START));
+  }, [pairId]);
+
+  // Fetches each rate type's FULL history once per pair (from its earliest
+  // entry to today), same as the Rate History table does -- the Year/
+  // Quarter/Month filter below then narrows it client-side with no extra
+  // round-trips, so switching periods is instant.
+  useEffect(() => {
+    if (pairId == null || !historyStart) return;
     const pair = pairs.find((p) => p.id === pairId);
     if (!pair) return;
     const types = pair.supports_extended_rates ? ["Market", "CBOS", "Pricing"] : ["Market"];
-    const { start, end } = periodRange(months);
     setLoading(true);
     Promise.all(
       types.map((t) =>
         api
           .get<FxRateRow[]>("/api/fx/rates/table", {
-            params: { currency_pair_id: pairId, rate_type: t, start, end },
+            params: { currency_pair_id: pairId, rate_type: t, start: historyStart, end: todayStr() },
           })
           .then((res) => ({
             label: t,
@@ -99,11 +137,36 @@ function FxAnalysis() {
           }))
       )
     )
-      .then(setSeries)
+      .then(setRawSeries)
       .finally(() => setLoading(false));
-  }, [pairId, months, pairs]);
+  }, [pairId, historyStart, pairs]);
 
   const selectedPair = pairs.find((p) => p.id === pairId);
+
+  const allDates = useMemo(
+    () => Array.from(new Set(rawSeries.flatMap((s) => s.points.map((p) => p.x)))).sort(),
+    [rawSeries]
+  );
+  const years = useMemo(() => Array.from(new Set(allDates.map(yearKey))).sort().reverse(), [allDates]);
+  const quarters = useMemo(() => Array.from(new Set(allDates.map(quarterKey))).sort().reverse(), [allDates]);
+  const monthsAvailable = useMemo(() => Array.from(new Set(allDates.map(monthKey))).sort().reverse(), [allDates]);
+
+  useEffect(() => {
+    if (periodType === "Year" && !years.includes(periodValue)) setPeriodValue(years[0] ?? "");
+    if (periodType === "Quarter" && !quarters.includes(periodValue)) setPeriodValue(quarters[0] ?? "");
+    if (periodType === "Month" && !monthsAvailable.includes(periodValue)) setPeriodValue(monthsAvailable[0] ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodType, years, quarters, monthsAvailable]);
+
+  const series = useMemo(() => {
+    if (periodType === "All") return rawSeries;
+    const inPeriod = (x: string) => {
+      if (periodType === "Year") return yearKey(x) === periodValue;
+      if (periodType === "Quarter") return quarterKey(x) === periodValue;
+      return monthKey(x) === periodValue;
+    };
+    return rawSeries.map((s) => ({ ...s, points: s.points.filter((p) => inPeriod(p.x)) }));
+  }, [rawSeries, periodType, periodValue]);
 
   return (
     <div className="card">
@@ -119,13 +182,39 @@ function FxAnalysis() {
               </option>
             ))}
           </select>
-          <select value={months} onChange={(e) => setMonths(Number(e.target.value))}>
-            {PERIOD_PRESETS.map((p) => (
-              <option key={p.months} value={p.months}>
-                {p.label}
-              </option>
-            ))}
+          <select value={periodType} onChange={(e) => setPeriodType(e.target.value as any)}>
+            <option value="All">All</option>
+            <option value="Year">Year</option>
+            <option value="Quarter">Quarter</option>
+            <option value="Month">Month</option>
           </select>
+          {periodType === "Year" && (
+            <select value={periodValue} onChange={(e) => setPeriodValue(e.target.value)}>
+              {years.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          )}
+          {periodType === "Quarter" && (
+            <select value={periodValue} onChange={(e) => setPeriodValue(e.target.value)}>
+              {quarters.map((q) => (
+                <option key={q} value={q}>
+                  {quarterLabel(q)}
+                </option>
+              ))}
+            </select>
+          )}
+          {periodType === "Month" && (
+            <select value={periodValue} onChange={(e) => setPeriodValue(e.target.value)}>
+              {monthsAvailable.map((m) => (
+                <option key={m} value={m}>
+                  {monthLabel(m)}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
       <p className="muted" style={{ marginTop: 0 }}>
@@ -133,7 +222,7 @@ function FxAnalysis() {
           ? "Comparing Market, CBOS and Pricing rates over the selected period."
           : "This pair only carries a Market Rate (CBOS/Pricing only apply to SDG pairs)."}
       </p>
-      {loading ? <p className="muted">Loading...</p> : <LineChart series={series} />}
+      {loading || !historyStart ? <p className="muted">Loading...</p> : <LineChart series={series} />}
     </div>
   );
 }
