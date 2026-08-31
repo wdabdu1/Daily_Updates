@@ -6,6 +6,7 @@ from typing import Optional
 import openpyxl
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -282,6 +283,39 @@ def _combined_rows(db: Session, currency: str, start: date, end: date) -> list[s
             )
         )
     return rows
+
+
+@router.get("/rates/earliest")
+def rates_earliest(
+    currency: Optional[str] = None,
+    currency_pair_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    _u: models.User = Depends(get_current_user),
+):
+    """Round 16: the earliest rate_date on file for a pair (across every
+    rate type), so the Rate History table and International Rates section
+    can size their fetch window to whatever data actually exists instead of
+    a hardcoded constant. That constant (2020-01-01) quietly hid a real
+    problem after Round 15's historical import loaded currency history back
+    to 2010 -- the page never even asked the backend for anything before
+    2020, so the older years were unreachable no matter how the period
+    filter was set. Pass either `currency` (an SDG-quote symbol, e.g. "AED"
+    -- resolved to its .../SDG pair, used by the main combined table) or
+    `currency_pair_id` directly (used by International Rates, where the
+    pair isn't necessarily SDG-quoted). Returns {"earliest": null} if the
+    pair doesn't exist or has no rates at all yet."""
+    pair_id = currency_pair_id
+    if pair_id is None and currency:
+        pair = get_pair(db, currency.strip().upper(), "SDG")
+        pair_id = pair.id if pair else None
+    if pair_id is None:
+        return {"earliest": None}
+    earliest = (
+        db.query(func.min(models.FxRate.rate_date))
+        .filter(models.FxRate.currency_pair_id == pair_id)
+        .scalar()
+    )
+    return {"earliest": earliest}
 
 
 @router.get("/rates/combined", response_model=list[schemas.FxCombinedRow])

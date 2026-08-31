@@ -8,10 +8,16 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// Fixed, generous fetch window so the whole of any historical import
-// (e.g. Jan 2026 onward) is always in view regardless of today's date --
-// the "All / Quarter / Month" filter below narrows what's actually shown.
-const HISTORY_START = "2020-01-01";
+// Round 16: the fetch window's start date used to be this fixed constant
+// ("generous" for a Jan-2026-onward import, but it silently capped every
+// currency's history at 2020-01-01 -- once Round 15's historical import
+// loaded real data back to 2010, that older history existed in the
+// database but the page never even asked for it, so no period filter
+// could reach it either). Replaced with a per-pair lookup via
+// GET /api/fx/rates/earliest, so the fetch window always matches whatever
+// data actually exists. This constant now only serves as a last-resort
+// fallback when that lookup hasn't resolved yet or a pair has no data.
+const NO_DATA_FALLBACK_START = todayStr();
 
 interface CurrencyPair {
   id: number;
@@ -41,6 +47,9 @@ const FIELDS: { key: FieldKey; label: string }[] = [
   { key: "pricing", label: "Pricing" },
 ];
 
+function yearKey(dateStr: string) {
+  return dateStr.slice(0, 4); // YYYY
+}
 function monthKey(dateStr: string) {
   return dateStr.slice(0, 7); // YYYY-MM
 }
@@ -91,6 +100,9 @@ function InternationalRatesSection({ pairs }: { pairs: CurrencyPair[] }) {
   const [pairId, setPairId] = useState<number | "">("");
   const [rows, setRows] = useState<IntlRateRow[]>([]);
   const [loading, setLoading] = useState(false);
+  // Round 16: fetch window start, resolved per-pair via /rates/earliest
+  // instead of a fixed constant -- see the note on NO_DATA_FALLBACK_START.
+  const [historyStart, setHistoryStart] = useState<string | null>(null);
 
   const [addDate, setAddDate] = useState(todayStr());
   const [addRate, setAddRate] = useState("");
@@ -106,12 +118,20 @@ function InternationalRatesSection({ pairs }: { pairs: CurrencyPair[] }) {
     if (pairId === "" && intlPairs.length > 0) setPairId(intlPairs[0].id);
   }, [intlPairs, pairId]);
 
-  function load() {
+  useEffect(() => {
     if (pairId === "") return;
+    setHistoryStart(null);
+    api
+      .get<{ earliest: string | null }>("/api/fx/rates/earliest", { params: { currency_pair_id: pairId } })
+      .then((res) => setHistoryStart(res.data.earliest ?? NO_DATA_FALLBACK_START));
+  }, [pairId]);
+
+  function load() {
+    if (pairId === "" || !historyStart) return;
     setLoading(true);
     api
       .get<{ id: number | null; rate_date: string; rate: string }[]>("/api/fx/rates/table", {
-        params: { currency_pair_id: pairId, rate_type: "Market", start: HISTORY_START, end: todayStr() },
+        params: { currency_pair_id: pairId, rate_type: "Market", start: historyStart, end: todayStr() },
       })
       .then((res) =>
         setRows(
@@ -124,7 +144,7 @@ function InternationalRatesSection({ pairs }: { pairs: CurrencyPair[] }) {
       .finally(() => setLoading(false));
   }
 
-  useEffect(load, [pairId]);
+  useEffect(load, [pairId, historyStart]);
 
   async function addRow() {
     if (pairId === "" || !addDate || !addRate) return;
@@ -231,7 +251,7 @@ function InternationalRatesSection({ pairs }: { pairs: CurrencyPair[] }) {
           {addError && <p className="error-text">{addError}</p>}
           {rowError && <p className="error-text">{rowError}</p>}
 
-          {loading ? (
+          {loading || !historyStart ? (
             <p className="muted">Loading...</p>
           ) : rows.length === 0 ? (
             <div className="empty-state">No rates recorded yet for this pair.</div>
@@ -300,8 +320,11 @@ export function FxRates() {
   const [rows, setRows] = useState<CombinedRow[]>([]);
   const [loadingTable, setLoadingTable] = useState(false);
 
-  const [periodType, setPeriodType] = useState<"All" | "Quarter" | "Month">("All");
+  const [periodType, setPeriodType] = useState<"All" | "Year" | "Quarter" | "Month">("All");
   const [periodValue, setPeriodValue] = useState<string>("");
+  // Round 16: fetch window start, resolved per-currency via /rates/earliest
+  // instead of a fixed constant -- see the note on NO_DATA_FALLBACK_START.
+  const [historyStart, setHistoryStart] = useState<string | null>(null);
 
   const [batchDate, setBatchDate] = useState(todayStr());
   const [batchType, setBatchType] = useState<"Market" | "CBOS" | "Pricing">("Market");
@@ -340,12 +363,20 @@ export function FxRates() {
     setCurrency(sdgPairCurrencies.includes("AED") ? "AED" : sdgPairCurrencies[0]);
   }, [sdgPairCurrencies, currency]);
 
-  function loadTable() {
+  useEffect(() => {
     if (!currency) return;
+    setHistoryStart(null);
+    api
+      .get<{ earliest: string | null }>("/api/fx/rates/earliest", { params: { currency } })
+      .then((res) => setHistoryStart(res.data.earliest ?? NO_DATA_FALLBACK_START));
+  }, [currency]);
+
+  function loadTable() {
+    if (!currency || !historyStart) return;
     setLoadingTable(true);
     return api
       .get<CombinedRow[]>("/api/fx/rates/combined", {
-        params: { currency, start: HISTORY_START, end: todayStr() },
+        params: { currency, start: historyStart, end: todayStr() },
       })
       .then((res) => setRows(res.data))
       .finally(() => setLoadingTable(false));
@@ -354,7 +385,7 @@ export function FxRates() {
   useEffect(() => {
     loadTable();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currency]);
+  }, [currency, historyStart]);
 
   useEffect(() => {
     if (!isMarketAutoCalc) {
@@ -487,6 +518,15 @@ export function FxRates() {
     }
   }
 
+  // Round 16: Year sits between "All" and "Quarter" -- once the fetch
+  // window actually reaches back to 2010 (see historyStart above), the
+  // Quarter/Month dropdowns alone are unwieldy for jumping to an old year,
+  // which is exactly the gap the user pointed out after the Round 15
+  // historical import landed.
+  const years = useMemo(
+    () => Array.from(new Set(rows.map((r) => yearKey(r.rate_date)))).sort().reverse(),
+    [rows]
+  );
   const quarters = useMemo(
     () => Array.from(new Set(rows.map((r) => quarterKey(r.rate_date)))).sort().reverse(),
     [rows]
@@ -497,13 +537,15 @@ export function FxRates() {
   );
 
   useEffect(() => {
+    if (periodType === "Year" && !years.includes(periodValue)) setPeriodValue(years[0] ?? "");
     if (periodType === "Quarter" && !quarters.includes(periodValue)) setPeriodValue(quarters[0] ?? "");
     if (periodType === "Month" && !monthsAvailable.includes(periodValue)) setPeriodValue(monthsAvailable[0] ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [periodType, quarters, monthsAvailable]);
+  }, [periodType, years, quarters, monthsAvailable]);
 
   const filteredRows = useMemo(() => {
     if (periodType === "All") return rows;
+    if (periodType === "Year") return rows.filter((r) => yearKey(r.rate_date) === periodValue);
     if (periodType === "Quarter") return rows.filter((r) => quarterKey(r.rate_date) === periodValue);
     return rows.filter((r) => monthKey(r.rate_date) === periodValue);
   }, [rows, periodType, periodValue]);
@@ -711,9 +753,19 @@ export function FxRates() {
             </select>
             <select value={periodType} onChange={(e) => setPeriodType(e.target.value as any)}>
               <option value="All">All</option>
+              <option value="Year">Year</option>
               <option value="Quarter">Quarter</option>
               <option value="Month">Month</option>
             </select>
+            {periodType === "Year" && (
+              <select value={periodValue} onChange={(e) => setPeriodValue(e.target.value)}>
+                {years.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            )}
             {periodType === "Quarter" && (
               <select value={periodValue} onChange={(e) => setPeriodValue(e.target.value)}>
                 {quarters.map((q) => (
@@ -737,7 +789,7 @@ export function FxRates() {
               disabled={filteredRows.length === 0}
               onClick={() => {
                 const dates = filteredRows.map((r) => r.rate_date).sort();
-                const start = dates[0] || HISTORY_START;
+                const start = dates[0] || historyStart || NO_DATA_FALLBACK_START;
                 const end = dates[dates.length - 1] || todayStr();
                 downloadXlsx("/api/fx/rates/combined/export", `fx_rate_history_${currency}.xlsx`, {
                   currency,
@@ -754,7 +806,15 @@ export function FxRates() {
         <div className="stat-grid" style={{ marginBottom: "1rem" }}>
           <div className="stat-card">
             <p className="stat-card__label">
-              Market Average ({periodType === "All" ? "All data" : periodType === "Quarter" ? quarterLabel(periodValue || "") : monthLabel(periodValue || "")})
+              Market Average ({
+                periodType === "All"
+                  ? "All data"
+                  : periodType === "Year"
+                  ? periodValue || ""
+                  : periodType === "Quarter"
+                  ? quarterLabel(periodValue || "")
+                  : monthLabel(periodValue || "")
+              })
             </p>
             <p className="stat-card__value">{fmtAvg(avg(filteredRows, "market_rate"))}</p>
           </div>
@@ -770,7 +830,7 @@ export function FxRates() {
 
         {rowError && <p className="error-text">{rowError}</p>}
 
-        {loadingTable ? (
+        {loadingTable || !historyStart ? (
           <p className="muted">Loading...</p>
         ) : monthKeys.length === 0 ? (
           <div className="empty-state">No rates recorded yet for this currency.</div>
