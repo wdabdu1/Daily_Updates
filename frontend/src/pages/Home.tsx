@@ -166,22 +166,22 @@ export function Home() {
         </div>
       </div>
 
-      {summary.status === "shortfall" && (
-        <div className="alert alert--negative">
-          Exposure alert: today's receivables exceed active bank dues (coverage) by{" "}
-          {formatSDG(summary.gap_sdg.replace(/^-/, ""))}.
-        </div>
-      )}
-      {summary.status === "covered" && (
-        <div className="alert alert--positive">
-          Active bank dues cover today's receivables.
-        </div>
-      )}
-      {summary.status === "no_data" && (
+      {summary.status === "no_data" ? (
         <div className="alert alert--neutral">{summary.notes}</div>
-      )}
-      {summary.status !== "no_data" && summary.notes && (
-        <div className="alert alert--neutral">{summary.notes}</div>
+      ) : (
+        <>
+          {isCoveredIncCash ? (
+            <div className="alert alert--positive">
+              Active bank dues cover today's receivables, with cash.
+            </div>
+          ) : (
+            <div className="alert alert--negative">
+              Exposure alert: today's receivables, with cash, exceed active bank dues by{" "}
+              {formatSDG(summary.gap_inc_cash_sdg.replace(/^-/, ""))}.
+            </div>
+          )}
+          {summary.notes && <div className="alert alert--neutral">{summary.notes}</div>}
+        </>
       )}
 
       <div className="stat-grid stat-grid--4">
@@ -211,6 +211,18 @@ export function Home() {
           <p className="stat-card__meta">Active Dues ÷ Receivables (inc. Cash)</p>
         </div>
       </div>
+
+      {summary.status !== "no_data" &&
+        (isCovered ? (
+          <div className="alert alert--positive">
+            Active bank dues cover today's receivables, without cash.
+          </div>
+        ) : (
+          <div className="alert alert--negative">
+            Exposure alert: today's receivables, without cash, exceed active bank dues by{" "}
+            {formatSDG(summary.gap_sdg.replace(/^-/, ""))}.
+          </div>
+        ))}
 
       <div className="stat-grid stat-grid--4">
         <div className="stat-card">

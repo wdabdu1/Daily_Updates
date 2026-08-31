@@ -1,6 +1,7 @@
 import io
 from datetime import date, datetime
-from decimal import InvalidOperation
+from decimal import Decimal, InvalidOperation
+from typing import Optional
 
 import openpyxl
 import pandas as pd
@@ -578,8 +579,11 @@ def fx_import_history_template(_u: models.User = Depends(get_current_user)):
         " same layout as the regular 'Import Rates from Excel' tool.",
         "One row per calendar day. All 10 columns must be present, with these exact header names"
         " (any column order is fine, and extra columns like 'Month' or 'Currency' are ignored).",
-        "All 9 rate values are required on every row -- Market/CBOS/Pricing all require USD, Euro"
-        " and AED together, same rule as manual entry on the FX Rates page.",
+        "Each of the 9 rate columns is optional per row -- leave a cell blank for any date a"
+        " particular rate type/currency wasn't recorded yet (e.g. Pricing only exists from a"
+        " certain date onward). This is different from the FX Rates page's manual Add/Update"
+        " Rates form, which still requires USD+Euro+AED together whenever you manually save a"
+        " rate type for one date.",
         "Re-uploading a Date that already has rates on file UPDATES those rates rather than"
         " creating duplicates -- safe to re-run after fixing a mistake.",
         "USD/SDG and EUR/SDG pairs are created automatically if they don't exist yet (AED/SDG"
@@ -615,8 +619,24 @@ def fx_import_history(
     # plain Python first (instead of interleaved with DB writes, as this
     # endpoint originally did) is what makes phase 2 below possible to run
     # as a handful of queries instead of thousands.
+    #
+    # Each of the 9 rate columns is parsed INDEPENDENTLY (values dict is
+    # Optional[Decimal] per key) -- a blank cell for one rate type just
+    # means that rate type wasn't recorded on that date, not that the whole
+    # row is invalid. This was tightened to "all 9 required" when this
+    # endpoint was first written (Round 7), matching the manual Add/Update
+    # Rates form's own rule that Market/CBOS/Pricing each need their full
+    # USD+Euro+AED triple on every *save*. A real multi-year historical
+    # file (Round 15) showed that rule doesn't hold for bulk history: Market
+    # rates go back to 2010, CBOS USD/Euro have their own much older start
+    # dates than CBOS AED, and Pricing only exists from 2026 onward --
+    # requiring all 9 on every row would have silently rejected the vast
+    # majority of genuine history. A non-blank cell that still fails to
+    # parse (e.g. stray text) is still reported as a per-row error, same as
+    # before -- only true blankness is now tolerated, and only per-value,
+    # not per-row.
     errors: list[schemas.ImportRowError] = []
-    parsed_rows: list[tuple[object, dict]] = []  # (rate_date, {key: Decimal})
+    parsed_rows: list[tuple[object, dict]] = []  # (rate_date, {key: Decimal | None})
     for r in range(header_row + 1, ws.max_row + 1):
         raw_date = ws.cell(row=r, column=col_map["date"]).value
         if raw_date is None:
@@ -628,21 +648,29 @@ def fx_import_history(
             errors.append(schemas.ImportRowError(row_number=r, reason=f"'{raw_date}' isn't a valid date."))
             continue
 
-        try:
-            values = {
-                key: parse_decimal(ws.cell(row=r, column=col).value)
-                for key, col in col_map.items()
-                if key != "date"
-            }
-        except (InvalidOperation, TypeError, ValueError) as e:
+        values: dict[str, Optional[Decimal]] = {}
+        cell_errors: list[str] = []
+        for key, col in col_map.items():
+            if key == "date":
+                continue
+            raw = ws.cell(row=r, column=col).value
+            if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+                values[key] = None  # not recorded for this date -- not an error
+                continue
+            try:
+                values[key] = parse_decimal(raw)
+            except (InvalidOperation, TypeError, ValueError) as e:
+                cell_errors.append(f"{_HISTORY_COLUMNS[key]} ({e})")
+
+        if cell_errors:
             errors.append(
                 schemas.ImportRowError(
-                    row_number=r,
-                    reason=f"{rate_date}: missing or invalid rate value ({e}) -- all 9 rate columns"
-                    " are required for every date.",
+                    row_number=r, reason=f"{rate_date}: invalid value(s) -- " + ", ".join(cell_errors)
                 )
             )
             continue
+        if not any(v is not None for v in values.values()):
+            continue  # every rate column blank for this date -- nothing to write
 
         parsed_rows.append((rate_date, values))
 
@@ -696,6 +724,8 @@ def fx_import_history(
                     (eur_pair, "Pricing", values["pricing_euro"]),
                 ]
                 for pair, rate_type, rate in entries:
+                    if rate is None:
+                        continue  # not recorded for this date -- leave whatever's there alone
                     key = (pair.id, rate_type, rate_date)
                     existing = existing_by_key.get(key)
                     if existing:
