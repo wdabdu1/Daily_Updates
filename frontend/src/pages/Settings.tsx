@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errMsg } from "../api/client";
+import { api, downloadXlsx, errMsg } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 
 interface BusinessUnit {
@@ -709,11 +709,100 @@ function CurrencyPairsSection({ currencies, onChange }: { currencies: Currency[]
   );
 }
 
-// Round 12: FX Data Import UI (One-Time Historical Import + Import Rates
-// from Excel) removed from Settings at the user's request. The endpoints
-// (/api/fx/import-history, /api/fx/import, and their /template variants)
-// are untouched in the backend -- reachable directly (e.g. via curl) if
-// needed again later.
+// Round 12 removed this UI (One-Time Historical Import + Import Rates from
+// Excel) in favor of curl, since the endpoints stayed reachable directly.
+// Round 17 brings the historical importer back at the user's request: this
+// session's cloud sandbox can only ever build and test against a private
+// throwaway database here, never the user's live Railway deployment, so
+// getting real data onto the live dashboard always requires an action the
+// user takes themselves -- and curl isn't a comfortable tool for that on
+// an ongoing basis. The generic long-format importer (/api/fx/import) and
+// the Bank Dues importer stay curl-only for now; only the "wide" one-row-
+// per-day historical layout (the one the user's actual currency-history
+// file uses) gets a UI again.
+function FxHistoryImportSection() {
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    imported: number;
+    updated: number;
+    skipped: { row_number: number; reason: string }[];
+  } | null>(null);
+
+  async function upload() {
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await api.post("/api/fx/import-history", formData);
+      setResult(res.data);
+      setFile(null);
+    } catch (e: any) {
+      setError(errMsg(e, "Import failed."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2 className="section-title">Currency History Import</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        One-time bulk load for the FX Rates page's Market/CBOS/Pricing history -- a "wide"
+        spreadsheet with one row per calendar day and separate Market/CBOS/Pricing x USD/Euro/AED
+        columns (not the same layout as any other import in this app -- download the template
+        below to see the exact columns expected). Re-uploading a date that's already on file
+        updates it instead of creating a duplicate, so it's safe to re-run after fixing a mistake.
+        Any of the 9 rate columns can be left blank for a date where that particular rate type
+        wasn't recorded yet -- e.g. Pricing only existing from a certain date onward is expected,
+        not an error.
+      </p>
+      <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+        <button
+          className="btn btn--ghost"
+          onClick={() => downloadXlsx("/api/fx/import-history/template", "fx_history_import_template.xlsx")}
+        >
+          Download Template
+        </button>
+        <input
+          type="file"
+          accept=".xlsx"
+          onChange={(e) => {
+            setFile(e.target.files?.[0] ?? null);
+            setResult(null);
+            setError(null);
+          }}
+        />
+        <button className="btn btn--primary" disabled={!file || busy} onClick={upload}>
+          {busy ? "Uploading..." : "Upload"}
+        </button>
+      </div>
+      {error && <p className="error-text">{error}</p>}
+      {result && (
+        <div style={{ marginTop: "0.75rem" }}>
+          <p className="muted">
+            Imported {result.imported}, updated {result.updated}
+            {result.skipped.length > 0 ? `, skipped ${result.skipped.length}.` : "."}
+          </p>
+          {result.skipped.length > 0 && (
+            <ul style={{ maxHeight: 220, overflowY: "auto", fontSize: "0.82rem" }}>
+              {result.skipped.slice(0, 30).map((s, i) => (
+                <li key={i}>
+                  Row {s.row_number}: {s.reason}
+                </li>
+              ))}
+              {result.skipped.length > 30 && <li>...and {result.skipped.length - 30} more.</li>}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------- Accounts
 interface AccountDraft {
@@ -1330,6 +1419,7 @@ export function Settings() {
       <BanksSection onChange={bump} />
       <CurrenciesSection onChange={bump} />
       <CurrencyPairsSection currencies={currencies} onChange={bump} />
+      <FxHistoryImportSection />
       <AccountsSection businessUnits={businessUnits} divisions={divisions} banks={banks} currencies={currencies} />
       <UsersSection />
     </div>
